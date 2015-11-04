@@ -1,0 +1,195 @@
+#!/usr/bin/env python2.7
+'''
+Author : Arjun Arkal Rao
+Affiliation : UCSC BME, UCSC Genomics Institute
+File : docker_scripts/packafged_scripts/transgene
+Dependencies : /inside/depot4/users/arjun/tools/transgene/parser_modules.py
+
+Program info can be found in the docstring of the main function
+'''
+from __future__ import division, print_function
+
+import argparse
+import collections
+import sys
+import re
+import os
+
+def read_fasta(input_file, alphabet):
+    '''
+    This module will accept an input fasta and yield individual sequences
+    one at a time.
+    '''
+    regexp_string = ''.join(['[^', alphabet, (alphabet).lower(), ']+'])
+    nucs_regexp = re.compile(regexp_string)  # regexp to identify sequence lines
+    first_seq = True  # used to bypass first seq
+    temp_id = None  # variable to hold the id string before processing
+    for line in input_file:
+        line = line.lstrip()
+        if len(line) == 0:  # blank line
+            continue
+        if line[0] == '>':  # id line
+            if first_seq:
+                first_seq = False
+                #  >seq_id comments becomes ['', 'seq_id','comments']
+                temp_id = re.split(r'[>\s,]+', line, maxsplit=2)
+                seq_id = temp_id[1]
+                #  rstrip to remove trailing newline character
+                if len(temp_id) == 3:
+                    seq_comments = temp_id[2].rstrip()
+                seq = ''
+                continue
+            if nucs_regexp.findall(seq) != []:
+                seq = re.sub(nucs_regexp, '', seq)
+            yield [seq_id, seq_comments, seq.upper()]
+            #  >seq_id comments becomes ['', 'seq_id','comments']
+            temp_id = re.split(r'[>\s,]+', line, maxsplit=2)
+            seq_id = temp_id[1]
+            if len(temp_id) == 3:
+                seq_comments = temp_id[2].rstrip()
+            seq = ''
+            continue
+        #  Remove whitespaces in sequence string
+        line = ''.join(line.split())
+        seq = seq + line
+    if nucs_regexp.findall(seq) != []:
+        seq = re.sub(nucs_regexp, '', seq)
+    yield [seq_id, seq_comments, seq.upper()]
+
+def read_snvs(snpeff_file, chromnames):
+    '''
+    This module reads in the SNVs from the snpeff_file provided to the program.
+    It assumes that the file has a non #-beginning header containing the words
+    contig/chrom, pos*, ref*, alt*. In the absence of a header, it will take
+    the following as default
+    [1] - chrom/contig
+    [2] - position (1-based)
+    [4] - ref allele
+    [5] - alt allele
+    '''
+    snvs = collections.Counter()
+    for line in snpeff_file:
+        if line.startswith('#'):
+            continue
+        line = line.strip().split('\t')
+        changes = line[7].split(';')[-1]
+        if changes.startswith('EFF'):
+            changes = re.sub('EFF=', '', changes)
+            changes = [x for x in changes.split(',') if
+                       x.startswith('NON_SYNONYMOUS_CODING') or
+                       x.startswith('STOP_GAINED')]
+            for i in range(0, len(changes)):
+                temp = changes[i].split('|')
+                if snvs[temp[8]] == 0:
+                    snvs[temp[8]] = collections.Counter({temp[3]:(temp[3][0],
+                                                                  temp[3][-1])})
+                else:
+                    snvs[temp[8]][temp[3]] = (temp[3][0], temp[3][-1])
+        else:
+            pass
+    return snvs
+
+
+def insert_snvs(chroms, snvs, outfile, peplen):
+    '''
+    This module uses the snv data contained in snvs and inserts them into the
+    genome contained in chroms. The arguments are
+    chroms  (DICT) - contains the peptides in the form of dicts where keys
+                     hold the protein name and the values holds the sequence.
+    snvs    (DICT) - contains the snvs parsed from teh input SnpEFF file.
+    outfile (FILE) - the file to write output to.
+    peplen  (INT)  - length of peptides which will be generated from the ouput
+                     file.
+    '''
+    blacklist = set(list('BJOUXZ'))
+    for pept in snvs.keys():
+        # First, grab the positions of all mutations in the peptide.  If there
+        # are multiple mutations, then for each mutation, list the other
+        # mutations that are within peplen positions of it.  The mutations are
+        # potentially coexpressed on the same peptide.  The data is stored in
+        # the mutation_groups counter object.  keys are the position of the
+        # mutations and values are the positions of mutations within peplen
+        # positions of them.  If there is only one mutation, or if a mutation
+        # has no other mutations within peplen of it, then it will get assigned
+        # an empty set by the list comprehension)
+        positions = sorted([int(p[1:-1]) for p in snvs[pept]])
+        mutation_groups = collections.Counter()
+        for i in positions:
+            mutation_groups[i] = [x for x in positions if x < i + peplen and
+                                  x > i - peplen]
+        for mutation in sorted(snvs[pept].keys(), key=lambda x: int(x[1:-1])):
+            # The keys for snvs[pept] are mutations in the form of
+            # <REF><POS><ALT> (Eg A521C, V98F).  If the reference
+            # protein stored in chroms has the same ref allele as
+            # described in the mutation, then continue - ELSE print
+            # an error and skip.
+            pos = int(mutation[1:-1])
+            if chroms[pept][int(pos)-1] == snvs[pept][mutation][0]:
+                protein = chroms[pept]
+                out_pept = []
+                prev = max(pos-peplen, 0)
+                out_pept += chroms[pept][prev:pos-1]
+                if snvs[pept][mutation][1] != '*':
+                    out_pept += [snvs[pept][mutation][1]]
+                    out_pept += chroms[pept][pos:min(pos + peplen - 1,
+                                                     len(protein))]
+                # If the final peptide contains a blacklisted amino acid,
+                # discard it.
+                if not blacklist.isdisjoint(out_pept):
+                    print('INFO : Blacklisted amino acids seen in ', pept, '.',
+                          sep='', file=sys.stderr)
+                    continue
+                if len(out_pept) >= peplen:
+                    print ('>', '_'.join([pept, str(pos),
+                                          chroms[pept][int(pos) - 1],
+                                          snvs[pept][mutation][1]]), '\n',
+                           ''.join(out_pept), sep='', file=outfile)
+                else:
+                    print('peptide too small: ', out_pept, file=sys.stderr)
+                    print('peplen is', peplen)
+                    print('outlen is', len(out_pept))
+                    print('mutation, pept', mutation, pept)
+            else:
+                print('ERROR :', chroms[pept][int(pos)-1], 'seen at position',
+                      pos, 'in', pept, '.', snvs[pept][mutation][0],
+                      'expected.', sep=' ', file=sys.stderr)
+    return None
+
+
+def main():
+    '''
+    '''
+
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    parser.add_argument('--in', dest='input_file', type=argparse.FileType('r'),
+                        help='Input FASTA file name', required=True)
+    parser.add_argument('--snpeff', dest='snpeff_file',
+                        type=argparse.FileType('r'),
+                        help='Input snpeff file name', required=True)
+    parser.add_argument('--prefix', dest='prefix', type=str,
+                        help='Output FASTQ file prefix', required=True)
+    parser.add_argument('--pep_lens', dest='pep_lens', type=str,
+                        help='Desired peptide lengths to process.  The ' + \
+                        'argument should be in the form of comma separated ' + \
+                        'values.  E.g. 9,15', default='9,10,15',
+                        required=False)
+    params = parser.parse_args()
+
+    # Read the proteomic fasta
+    chroms = collections.Counter()
+    for fa_seq in read_fasta(params.input_file, 'ARNDCQEGHILKMFPSTWYVBZJUOX'):
+        chroms[fa_seq[0]] = list(fa_seq[2])
+
+    # Read in snpeff file
+    # The naming convention of the variables and functions comes from a previous
+    # functionality
+    snvs = read_snvs(params.snpeff_file, chroms.keys())
+    params.input_file.close()
+    params.snpeff_file.close()
+    for peplen in params.pep_lens.split(','):
+        with open('_'.join([params.prefix, 'tumor', peplen,
+                            'mer_snpeffed.faa']), 'w') as outfile:
+            insert_snvs(chroms, snvs, outfile, int(peplen))
+
+if __name__ == '__main__':
+    sys.exit(main())
