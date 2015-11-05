@@ -284,8 +284,7 @@ def main():
     parser = argparse.ArgumentParser(description=main.__doc__)
     parser.add_argument('--peptides', dest='input_file',
                         type=argparse.FileType('r'), help='Input peptide' + \
-                        ' FASTA file', required=False,
-                        default='/home/gencode.v19.pc_translations.fa')
+                        ' FASTA file', required=True)
     parser.add_argument('--snpeff', dest='snpeff_file',
                         type=argparse.FileType('r'),
                         help='Input snpeff file name', required=True)
