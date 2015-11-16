@@ -8,12 +8,18 @@ File : Transgene/transgene
 Program info can be found in the docstring of the main function
 '''
 from __future__ import division, print_function
+from operator import itemgetter
+from tempfile import mkstemp
 
 import argparse
 import collections
-import sys
-import re
+import json
 import os
+import re
+import shutil
+import sys
+
+
 
 def read_fasta(input_file, alphabet):
     '''
@@ -56,6 +62,7 @@ def read_fasta(input_file, alphabet):
         seq = re.sub(nucs_regexp, '', seq)
     yield [seq_id, seq_comments, seq.upper()]
 
+
 def read_snvs(snpeff_file, chromnames):
     '''
     This module reads in the SNVs from the snpeff_file provided to the program.
@@ -76,8 +83,8 @@ def read_snvs(snpeff_file, chromnames):
         if changes.startswith('EFF'):
             changes = re.sub('EFF=', '', changes)
             changes = [x for x in changes.split(',') if
-                       x.startswith('NON_SYNONYMOUS_CODING') or
-                       x.startswith('STOP_GAINED')]
+                       (x.startswith('NON_SYNONYMOUS_CODING') or
+                        x.startswith('STOP_GAINED')) and 'protein_coding' in x]
             for i in range(0, len(changes)):
                 temp = changes[i].split('|')
                 if snvs[temp[8]] == 0:
@@ -272,6 +279,53 @@ def write_pepts_to_file(pept_dict, outfile, peplen):
         print(peptide_sequence, file=outfile)
     return None
 
+def parse_peptides(infile, outfile):
+    '''
+    This module takes in a peptides file and squashes it into the miminum number
+    of peptides required to describe the potential neo-immunopeptidome.  It's
+    main function is to take transcript-level mutation calls and merge them by
+    gene if the sequences they contain are identical (to correct for splicing
+    information).
+    '''
+    with open(infile, 'r') as i_f:
+        peptides = collections.Counter()
+        for pep_name, _, pep_seq in read_fasta(i_f, 
+                                               'ARNDCQEGHILKMFPSTWYVBZJUOX'):
+            pep_name =  pep_name.split('_')
+            gene_name = pep_name[0]
+            hugo_gene = pep_name[2]
+            transcript_mutation = '_'.join([pep_name[1]]+pep_name[3:])
+            if peptides[(gene_name, hugo_gene)] == 0:
+                peptides[(gene_name, hugo_gene)] = {transcript_mutation: 
+                                                    pep_seq}
+            else:
+                peptides[(gene_name, hugo_gene)][transcript_mutation] = pep_seq
+    outmap = {}
+    with open(outfile, 'w') as o_f:
+        #  mhc predictors can't handle the giant peptide names created by
+        #  merging the names of peptide emerging from transcripts bearing
+        #  similar mutations hence we use an incremental system to naem the
+        #  peptides and store the peptide number to actual peptide name
+        #  information in a map file.
+        peptide_number=1
+        for gene in peptides.keys():
+            unique_seqs = set(peptides[gene].values())
+            for group in [[x for x, y in peptides[gene].items() if y == z] for 
+                          z in unique_seqs]:
+                pepname = ''.join(['neoepitope_', str(peptide_number)])
+                group_info = '\t'.join(list(gene) +[','.join(group)])
+                groupseq = peptides[gene][group[0]]
+                #  Print to faa files
+                print('>', pepname, sep='', file=o_f)
+                print(groupseq, file=o_f)
+                #  Save to map dict
+                outmap[pepname] = group_info
+                peptide_number+=1
+    #  Json dump the results to file
+    with open(''.join([outfile, '.map']), 'w') as mapfile:
+        json.dump(outmap, mapfile)
+    return None
+
 
 def main():
     '''
@@ -283,7 +337,7 @@ def main():
     '''
     parser = argparse.ArgumentParser(description=main.__doc__)
     parser.add_argument('--peptides', dest='input_file',
-                        type=argparse.FileType('r'), help='Input peptide' + \
+                        type=argparse.FileType('r'), help='Input peptide' +
                         ' FASTA file', required=True)
     parser.add_argument('--snpeff', dest='snpeff_file',
                         type=argparse.FileType('r'),
@@ -291,26 +345,28 @@ def main():
     parser.add_argument('--prefix', dest='prefix', type=str,
                         help='Output FASTQ file prefix', required=True)
     parser.add_argument('--pep_lens', dest='pep_lens', type=str,
-                        help='Desired peptide lengths to process.  The ' + \
-                        'argument should be in the form of comma separated ' + \
-                        'values.  E.g. 9,15', default='9,10,15',
-                        required=False)
+                        help='Desired peptide lengths to process.  The ' +
+                        'argument should be in the form of comma separated ' +
+                        'values.  E.g. 9,15', required=False, default='9,10,15')
+    parser.add_argument('--make_json_dumps', dest='make_json_dumps', type=bool,
+                        help='Reduce peptide fasta record names in the output' +
+                        ' and dump the mapping info into a .map json file?',
+                        required=False, default=True)
     params = parser.parse_args()
 
     # Read the proteomic fasta
     chroms = collections.Counter()
     for fa_seq in read_fasta(params.input_file, 'ARNDCQEGHILKMFPSTWYVBZJUOX'):
         #  Fastq headers are ALWAYS 7 |-separated fields long. The fields are
-        #  1. Ensembl Transcript         -- e.g ENST00000511116.1
-        #  2. Ensembl Gene               -- e.g ENSG00000113658.12
-        #  3. Havana Gene                -- e.g OTTHUMG00000163212.3
-        #  4. Havana Transcript          -- e.g OTTHUMT00000372098.1
-        #  5. HGNC gene splice variant   -- e.g SMAD5-003
-        #  6. HUGO name / HGNC symbol    -- e.g SMAD5
-        #  7. Length in AA residues      -- e.g 134
-        #  We need columns 1 and 6
-        record_name = '_'.join([y for x, y in enumerate(fa_seq[0].split('|')) 
-                                if x in [0,5]])
+        #  0. Ensembl Transcript         -- e.g ENST00000511116.1
+        #  1. Ensembl Gene               -- e.g ENSG00000113658.12
+        #  2. Havana Gene                -- e.g OTTHUMG00000163212.3
+        #  3. Havana Transcript          -- e.g OTTHUMT00000372098.1
+        #  4. HGNC gene splice variant   -- e.g SMAD5-003
+        #  5. HUGO name / HGNC symbol    -- e.g SMAD5
+        #  6. Length in AA residues      -- e.g 134
+        #  We need columns 1, 2,  and 6
+        record_name = '_'.join(itemgetter(1, 0, 5)(fa_seq[0].split('|')))
         chroms[record_name] = list(fa_seq[2])
 
     # Read in snpeff file
@@ -320,9 +376,18 @@ def main():
     params.input_file.close()
     params.snpeff_file.close()
     for peplen in params.pep_lens.split(','):
-        with open('_'.join([params.prefix, 'tumor', peplen,
-                            'mer_snpeffed.faa']), 'w') as outfile:
+        outfile, outfile_path = mkstemp()
+        os.close(outfile)
+        with open(outfile_path, 'w') as outfile:
             insert_snvs(chroms, snvs, outfile, int(peplen))
+        if params.make_json_dumps:
+            parse_peptides(outfile_path, '_'.join([params.prefix, 'tumor',
+                                                   peplen, 'mer_snpeffed.faa']))
+            os.remove(outfile_path)
+        else:
+            shutil.move(outfile_path, '_'.join([params.prefix, 'tumor',
+                                                peplen, 'mer_snpeffed.faa']))
+        
 
 if __name__ == '__main__':
     sys.exit(main())
