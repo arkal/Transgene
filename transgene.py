@@ -202,9 +202,10 @@ def insert_snvs(chroms, snvs, outfile, peplen):
                                                        len(protein))]
                 write_pepts_to_file(out_pepts, outfile, peplen)    
             else:
-                print('ERROR: ', protein[mut_pos-1], ' seen at position ',
-                      mut_pos, ' in ', pept, '.  ', snvs[pept][mutation][0],
-                      ' expected.', sep='', file=sys.stderr)
+                print('ERROR: ', chroms[pfasta_name][mut_pos-1], ' seen at ',
+                      'position ', mut_pos, ' in ', pept, '.  ', 
+                      snvs[pept][mutation][0], ' expected.', sep='', 
+                      file=sys.stderr)
     return None
 
 
