@@ -273,7 +273,7 @@ def write_pepts_to_file(pept_dict, outfile, peplen):
                   sep='', file=sys.stderr)
             continue
         if len(peptide_sequence) < peplen:
-            print('INFO: IAR less than ' + peplen + ' resides seen at\n',
+            print('INFO: IAR less than %s' % peplen + ' resides seen at\n',
                   peptide_name, '\n', peptide_sequence, sep='', file=sys.stderr)
             continue
         print('>', peptide_name, sep='', file=outfile)
