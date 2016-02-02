@@ -58,6 +58,11 @@ def read_fasta(input_file, alphabet):
         #  Remove whitespaces in sequence string
         line = ''.join(line.split())
         seq = seq + line
+    # If seq hasn't been initialized, the input file was empty.
+    try:
+        seq
+    except UnboundLocalError:
+        raise RuntimeError('Input peptides file was empty.')
     if nucs_regexp.findall(seq) != []:
         seq = re.sub(nucs_regexp, '', seq)
     yield [seq_id, seq_comments, seq.upper()]
@@ -94,6 +99,9 @@ def read_snvs(snpeff_file, chromnames):
                     snvs[temp[8]][temp[3]] = (temp[3][0], temp[3][-1])
         else:
             pass
+    if len(snvs) == 0:
+        raise RuntimeError('Input snpeffed mutations file was empty or had no' +
+                           ' actionable mutations.')
     return snvs
 
 
@@ -119,7 +127,7 @@ def insert_snvs(chroms, snvs, outfile, peplen):
         #  combinations are shown. The WT (O,O,O) isn't shown since it isn't
         #  useful.
         #
-        #  POSITONS:    a b c d e f g h i j k l m n o p q r s t u v w x y 
+        #  POSITONS:    a b c d e f g h i j k l m n o p q r s t u v w x y
         #
         #  X+Y+Z        O O O O O O O O X O O O Y O O O Z O O O O O O O O
         #  X + Z        O O O O O O O O X O O O O O O O Z O O O O O O O O
@@ -141,12 +149,12 @@ def insert_snvs(chroms, snvs, outfile, peplen):
         #  in the list is a list of all mutations in the group.  If there are no
         #  neighboring mutations, the group contains only the mutation itself.
         mutation_groups = {x: [y for y in snvs[pept].keys() if
-                               int(y[1:-1]) < int(x[1:-1]) + peplen and 
-                               int(y[1:-1]) > int(x[1:-1])] for x in 
+                               int(y[1:-1]) < int(x[1:-1]) + peplen and
+                               int(y[1:-1]) > int(x[1:-1])] for x in
                            snvs[pept].keys()}
         for mutation, mut_group in mutation_groups.items():
             mut_pos = int(mutation[1:-1])
-            pfasta_name = [x for x in chroms.keys() if 
+            pfasta_name = [x for x in chroms.keys() if
                            ''.join([pept, '_']) in x][0]
             #  The keys for snvs[pept] are mutations in the form of
             #  <REF><POS><ALT> (Eg A521C, V98F).  If the reference
@@ -186,7 +194,7 @@ def insert_snvs(chroms, snvs, outfile, peplen):
                 #  sequence in all outputs are identical.
                 out_pepts = {
                     os.urandom(10):{'pept_name': [pfasta_name, mutation],
-                                    'pept_seq': protein[first:mut_pos-1] + 
+                                    'pept_seq': protein[first:mut_pos-1] +
                                         [snvs[pept][mutation][1]]}}
                 last = mut_pos  #  The last AA that was procesed
                 for mut in mut_group:
@@ -200,11 +208,11 @@ def insert_snvs(chroms, snvs, outfile, peplen):
                 for iar in out_pepts.values():
                     iar['pept_seq'] += protein[last:min(mut_pos + peplen - 1,
                                                        len(protein))]
-                write_pepts_to_file(out_pepts, outfile, peplen)    
+                write_pepts_to_file(out_pepts, outfile, peplen)
             else:
                 print('ERROR: ', chroms[pfasta_name][mut_pos-1], ' seen at ',
-                      'position ', mut_pos, ' in ', pept, '.  ', 
-                      snvs[pept][mutation][0], ' expected.', sep='', 
+                      'position ', mut_pos, ' in ', pept, '.  ',
+                      snvs[pept][mutation][0], ' expected.', sep='',
                       file=sys.stderr)
     return None
 
@@ -290,14 +298,14 @@ def parse_peptides(infile, outfile):
     '''
     with open(infile, 'r') as i_f:
         peptides = collections.Counter()
-        for pep_name, _, pep_seq in read_fasta(i_f, 
+        for pep_name, _, pep_seq in read_fasta(i_f,
                                                'ARNDCQEGHILKMFPSTWYVBZJUOX'):
             pep_name =  pep_name.split('_')
             gene_name = pep_name[0]
             hugo_gene = pep_name[2]
             transcript_mutation = '_'.join([pep_name[1]]+pep_name[3:])
             if peptides[(gene_name, hugo_gene)] == 0:
-                peptides[(gene_name, hugo_gene)] = {transcript_mutation: 
+                peptides[(gene_name, hugo_gene)] = {transcript_mutation:
                                                     pep_seq}
             else:
                 peptides[(gene_name, hugo_gene)][transcript_mutation] = pep_seq
@@ -311,7 +319,7 @@ def parse_peptides(infile, outfile):
         peptide_number=1
         for gene in peptides.keys():
             unique_seqs = set(peptides[gene].values())
-            for group in [[x for x, y in peptides[gene].items() if y == z] for 
+            for group in [[x for x, y in peptides[gene].items() if y == z] for
                           z in unique_seqs]:
                 pepname = ''.join(['neoepitope_', str(peptide_number)])
                 group_info = '\t'.join(list(gene) +[','.join(group)])
@@ -349,10 +357,10 @@ def main():
                         help='Desired peptide lengths to process.  The ' +
                         'argument should be in the form of comma separated ' +
                         'values.  E.g. 9,15', required=False, default='9,10,15')
-    parser.add_argument('--make_json_dumps', dest='make_json_dumps', type=bool,
-                        help='Reduce peptide fasta record names in the output' +
-                        ' and dump the mapping info into a .map json file?',
-                        required=False, default=True)
+    parser.add_argument('--no_json_dumps', action='store_true',
+                        help='Do not educe peptide fasta record names in the ' +
+                        'output by dumping the mapping info into a .map json ' +
+                        'file.', required=False, default=False)
     params = parser.parse_args()
 
     # Read the proteomic fasta
@@ -367,7 +375,11 @@ def main():
         #  5. HUGO name / HGNC symbol    -- e.g SMAD5
         #  6. Length in AA residues      -- e.g 134
         #  We need columns 1, 2,  and 6
-        record_name = '_'.join(itemgetter(1, 0, 5)(fa_seq[0].split('|')))
+        try:
+            record_name = '_'.join(itemgetter(1, 0, 5)(fa_seq[0].split('|')))
+        except IndexError:
+            raise RuntimeError('Was the input peptides file obtained from ' +
+                               'Gencode?')
         chroms[record_name] = list(fa_seq[2])
 
     # Read in snpeff file
@@ -381,14 +393,13 @@ def main():
         os.close(outfile)
         with open(outfile_path, 'w') as outfile:
             insert_snvs(chroms, snvs, outfile, int(peplen))
-        if params.make_json_dumps:
+        if params.no_json_dumps:
+            shutil.move(outfile_path, '_'.join([params.prefix, 'tumor',
+                                                peplen, 'mer_snpeffed.faa']))
+        else:
             parse_peptides(outfile_path, '_'.join([params.prefix, 'tumor',
                                                    peplen, 'mer_snpeffed.faa']))
             os.remove(outfile_path)
-        else:
-            shutil.move(outfile_path, '_'.join([params.prefix, 'tumor',
-                                                peplen, 'mer_snpeffed.faa']))
-        
 
 if __name__ == '__main__':
     sys.exit(main())
