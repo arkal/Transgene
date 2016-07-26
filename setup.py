@@ -36,7 +36,8 @@ setup(name='transgene',
       author_email='aarao@ucsc.edu',
       license='Apache',
       install_requires=[
-          'pysam>=0.9.1'
+          'pysam>=0.9.1',
+          'swalign>=0.3.3',
       ],
       tests_require=[
           'pytest==2.8.3'],

@@ -65,9 +65,13 @@ class TransgeneTest(unittest.TestCase):
         params.no_json_dumps = False
         params.log_level = 'DEBUG'
         params.reject_threshold = 5
-        params.rna_file  = self._get_input_path('test_input/test.bam') if use_RNA else None
-        params.input_file = open(self._get_input_path('test_input/test.pc_translations.fa'))
+        params.rna_file = self._get_input_path('test_input/test.bam') if use_RNA else None
+        params.peptide_file = open(self._get_input_path('test_input/test.pc_translations.fa'))
         params.snpeff_file = open(self._get_input_path('test_input/snpeff_test.vcf'))
+        params.transcript_file = open(self._get_input_path('test_input/test.pc_transcripts.fa'))
+        params.fusion_file = open(self._get_input_path('test_input/test_fusions.bedpe'))
+        params.annotation_file = open(self._get_input_path('test_input/gencode.v19.chr21.annotation.gtf'))
+        params.genome_file = open(self._get_input_path('test_input/chr21.fa'))
         transgene.main(params)
         output = {'9mer': {'fasta': 'unit_test_tumor_9_mer_snpeffed.faa',
                            'map': 'unit_test_tumor_9_mer_snpeffed.faa.map'},
@@ -82,8 +86,10 @@ class TransgeneTest(unittest.TestCase):
         self.pep_lens = output.keys()
         self.output = output
         self.check_output(params.rna_file is not None)
-        params.input_file.close()
+        params.peptide_file.close()
         params.snpeff_file.close()
+        params.transcript_file.close()
+        params.fusion_file.close()
 
     def check_output(self, test_with_rna_file):
         """
@@ -96,15 +102,30 @@ class TransgeneTest(unittest.TestCase):
             '9mer': {'ELAGGGYVPSAPCPGET',  # ENST00000492084.1:L56P
                      'EFQNDFYRYCIRRSSPQ',  # ENST00000440843.2:S24Y
                      'PRLYKIYRGRDSERAPA',  # ENST00000395952.3:E19G
-                     'TAVTAPHSNSWDTYHQPRALEKH'},  # ENST00000395952.3:S42NXXXXXY48H
+                     'TAVTAPHSNSWDTYHQPRALEKH',  # ENST00000395952.3:S42NXXXXXY48H
+                     'SQLETYKRQEDPKWEF',    # HOOK3-RET fusion
+                     'QSSSYGQQTASGDMQT',    # EWSR1-ATF1 fusion
+                     'VVCTQPKSPSSTPVSP',    # TMPRSS2-ETV1 fusion
+                     'QSSSYGQQSPPLGGAQ',    # EWSR1-FLI fusion
+                     'NSKMALNSEALSVVSE'},   # TMPRSS2-ERG fusion
             '10mer': {'GELAGGGYVPSAPCPGETC',  # ENST00000492084.1:L56P
                       'LEFQNDFYRYCIRRSSPQP',  # ENST00000440843.2:S24Y
                       'GPRLYKIYRGRDSERAPAS',  # ENST00000395952.3:E19G
-                      'PTAVTAPHSNSWDTYHQPRALEKHA'},  # ENST00000395952.3:S42NXXXXXY48H
+                      'PTAVTAPHSNSWDTYHQPRALEKHA',  # ENST00000395952.3:S42NXXXXXY48H
+                      'RSQLETYKRQEDPKWEFP',   # HOOK3-RET fusion
+                      'QQSSSYGQQTASGDMQTY',   # EWSR1-ATF1 fusion
+                      'PVVCTQPKSPSSTPVSPL',   # TMPRSS2-ETV1 fusion
+                      'QQSSSYGQQSPPLGGAQT',   # EWSR1-FLI fusion
+                      'DNSKMALNSEALSVVSED'},  # TMPRSS2-ERG fusion
             '15mer': {'ESLYSGELAGGGYVPSAPCPGETC',  # ENST00000492084.1:L56P
                       'SLYPRLEFQNDFYRYCIRRSSPQPPPNLA',  # ENST00000440843.2:S24Y
                       'LSCVLGPRLYKIYRGRDSERAPASVPETP',  # ENST00000395952.3:E19G
-                      'SVPETPTAVTAPHSNSWDTYHQPRALEKHADSILA'},  # ENST00000395952.3:S42NXXXXXY48H
+                      'SVPETPTAVTAPHSNSWDTYHQPRALEKHADSILA',  # ENST00000395952.3:S42NXXXXXY48H
+                      'KANAARSQLETYKRQEDPKWEFPRKNLV',   # HOOK3-RET fusion
+                      'PSQYSQQSSSYGQQTASGDMQTYQIRTT',   # EWSR1-ATF1 fusion
+                      'TQASNPVVCTQPKSPSSTPVSPLHHASP',   # TMPRSS2-ETV1 fusion
+                      'PSQYSQQSSSYGQQSPPLGGAQTISKNT',   # EWSR1-FLI fusion
+                      'LLDAVDNSKMALNSEALSVVSEDQSLFE'}   # TMPRSS2-ERG fusion
         }
         if not test_with_rna_file:
             expected_peptides['9mer'].update([

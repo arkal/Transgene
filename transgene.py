@@ -23,52 +23,8 @@ import re
 import shutil
 import sys
 
-
-def read_fasta(input_file, alphabet):
-    """
-    This module will accept an input fasta and yield individual sequences
-    one at a time.
-    """
-    regexp_string = ''.join(['[^', alphabet, alphabet.lower(), ']+'])
-    nucs_regexp = re.compile(regexp_string)  # Regexp to identify sequence lines
-    first_seq = True  # Used to bypass first seq
-    seq, seq_id, seq_comments = None, None, None
-    for line in input_file:
-        line = line.lstrip()
-        if len(line) == 0:  # blank line
-            continue
-        if line[0] == '>':  # id line
-            if first_seq:
-                first_seq = False
-                #  >seq_id comments becomes ['', 'seq_id','comments']
-                temp_id = re.split(r'[>\s,]+', line, maxsplit=2)
-                seq_id = temp_id[1]
-                #  right strip to remove trailing newline character
-                if len(temp_id) == 3:
-                    seq_comments = temp_id[2].rstrip()
-                seq = ''
-                continue
-            if nucs_regexp.findall(seq):
-                seq = re.sub(nucs_regexp, '', seq)
-            yield [seq_id, seq_comments, seq.upper()]
-            #  >seq_id comments becomes ['', 'seq_id','comments']
-            temp_id = re.split(r'[>\s,]+', line, maxsplit=2)
-            seq_id = temp_id[1]
-            if len(temp_id) == 3:
-                seq_comments = temp_id[2].rstrip()
-            seq = ''
-            continue
-        #  Remove whitespaces in sequence string
-        line = ''.join(line.split())
-        seq += line
-    # If seq hasn't been initialized, the input file was empty.
-    try:
-        seq
-    except UnboundLocalError:
-        raise RuntimeError('Input peptides file was empty.')
-    if nucs_regexp.findall(seq):
-        seq = re.sub(nucs_regexp, '', seq)
-    yield [seq_id, seq_comments, seq.upper()]
+from common import read_fasta
+from fusion import get_transcriptome_data, read_fusions, insert_fusions, get_exons
 
 
 # A named tuple describing the result of running reject_mutation on a mutation.
@@ -433,7 +389,8 @@ def insert_snvs(chroms, snvs, tumfile, normfile, peplen, rna_bam=None):
     :param dict chroms: Contains the peptides in the form of dicts where keys hold the protein name
     and the values holds the sequence.
     :param dict snvs: Contains the snvs parsed from teh input SnpEFF file.
-    :param file outfile: The file to write output to.
+    :param file tumfile: The file to write tumor output to.
+    :param file normfile: The file to write normal output to.
     :param int peplen: Length of peptides which will be generated from the output file.
     :param str rna_bam: The path to the RNA-Seq bam file
     """
@@ -548,11 +505,16 @@ def parse_peptides(tumfile, normfile, prefix, suffix):
             hugo_gene = pep_name[2]
             transcript_mutation = '_'.join([pep_name[1]]+pep_name[3:])
             if peptides[(gene_name, hugo_gene)] == 0:
-                peptides[(gene_name, hugo_gene)] = {transcript_mutation:
-                                                        (pep_seq, normal_peptides[full_pep_name])}
+                try:
+                    peptides[(gene_name, hugo_gene)] = {transcript_mutation:
+                                                            (pep_seq, normal_peptides[full_pep_name])}
+                except KeyError:
+                    peptides[(gene_name, hugo_gene)] = {transcript_mutation: (pep_seq, None)}
             else:
-                peptides[(gene_name, hugo_gene)][transcript_mutation] = \
-                    (pep_seq, normal_peptides[full_pep_name])
+                try:
+                    peptides[(gene_name, hugo_gene)][transcript_mutation] = (pep_seq, normal_peptides[full_pep_name])
+                except KeyError:
+                    peptides[(gene_name, hugo_gene)][transcript_mutation] = (pep_seq, None)
     outmap = {}
     out_tum_file = '_'.join([prefix, 'tumor', suffix])
     out_norm_file = '_'.join([prefix, 'normal', suffix])
@@ -572,9 +534,11 @@ def parse_peptides(tumfile, normfile, prefix, suffix):
                 group_norm_seq = peptides[gene][group[0]][1]
                 # Print to faa files
                 print('>', pepname, sep='', file=t_f)
-                print('>', pepname, sep='', file=n_f)
                 print(group_tum_seq, file=t_f)
-                print(group_norm_seq, file=n_f)
+
+                if group_norm_seq is not None:
+                    print('>', pepname, sep='', file=n_f)
+                    print(group_norm_seq, file=n_f)
                 # Save to map dict
                 outmap[pepname] = group_info
                 peptide_number += 1
@@ -584,31 +548,18 @@ def parse_peptides(tumfile, normfile, prefix, suffix):
     return None
 
 
-def main(params):
+def get_proteome_data(infile):
     """
-    This tool accepts a vcf of translated mutations -- i.e. a file that has information of the
-    mutation in genomic space (e.g. chr1:47403668) and in proteomic space (e.g.
-    ENST00000371904.4:D113N) -- and outputs files that contain n-mer peptides (n>0) that can be
-    passed to MHC:peptide binding prediction tools.
+    Loads GENCODE translated transcript sequences into a dictionary
 
-    Transgene can be run in an RNA-aware mode where it will only accept mutations that have evidence
-    in an RNA-seq bam (Mapped to the genome reference).
+    :param file infile: GENCODE file object
+    :return: Mapping of concatenated Ensembl gene IDs, Ensembl transcript IDs, and HUGO names to protein sequences
+    :rtype: dict
     """
-    logging.basicConfig(level=getattr(logging, params.log_level), format='%(levelname)s: '
-                                                                         '%(message)s')
-
-    # Process the arguments
-    if params.rna_file is not None:
-        params.rna_file = os.path.abspath(os.path.expanduser(params.rna_file))
-        if not os.path.exists(params.rna_file):
-            raise RuntimeError('Could not file the RNA-seq bam file at the provided location.')
-        if not os.path.exists(params.rna_file + '.bai'):
-            raise RuntimeError('Could not file the RNA-seq bai file at the provided location.')
-
     # Read the proteomic fasta
-    logging.info('Reading the Input fasta file')
-    chroms = collections.Counter()
-    for fa_seq in read_fasta(params.input_file, 'ARNDCQEGHILKMFPSTWYVBZJUOX'):
+    logging.info('Reading GENCODE proteome fasta file')
+    peptides = collections.Counter()
+    for fa_seq in read_fasta(infile, 'ARNDCQEGHILKMFPSTWYVBZJUOX'):
         #  Fastq headers are ALWAYS 7 or 8 |-separated fields long. The fields are
         #  0a. Ensembl Peptide (optional) -- e.g ENSP00000334393.3
         #  0b. Ensembl Transcript         -- e.g ENST00000335137.3
@@ -623,20 +574,67 @@ def main(params):
             record_name = '_'.join(itemgetter(-6, -7, -2)(fa_seq[0].split('|')))
         except IndexError:
             raise RuntimeError('Was the input peptides file obtained from Gencode?')
-        chroms[record_name] = list(fa_seq[2])
+        peptides[record_name] = list(fa_seq[2])
+    return peptides
+
+
+def main(params):
+    """
+    Transgene accepts a SnpEffed vcf of translated mutations -- i.e. a file that has information of the
+    mutation in genomic space (e.g. chr1:47403668) and in proteomic space (e.g.
+    ENST00000371904.4:D113N) -- and outputs files that contain n-mer peptides (n>0) that can be
+    passed to MHC:peptide binding prediction tools. Additionally, this tool accepts gene fusion
+    annotations in BEDPE format and outputs n-mer peptides across the gene fusion boundary.
+
+    Transgene can be run in an RNA-aware mode where it will only accept small mutations that have evidence
+    in an RNA-seq bam (Mapped to the genome reference). It does not look for evidence of fusion events in
+    the RNA-seq bam.
+    """
+    logging.basicConfig(level=getattr(logging, params.log_level), format='%(levelname)s: '
+                                                                         '%(message)s')
+    # Process the arguments
+    if params.rna_file is not None:
+        params.rna_file = os.path.abspath(os.path.expanduser(params.rna_file))
+        if not os.path.exists(params.rna_file):
+            raise RuntimeError('Could not file the RNA-seq bam file at the provided location.')
+        if not os.path.exists(params.rna_file + '.bai'):
+            raise RuntimeError('Could not file the RNA-seq bai file at the provided location.')
+
+    # Load proteomic data
+    proteome_data = None
+    if params.peptide_file:
+        proteome_data = get_proteome_data(params.peptide_file)
+        params.peptide_file.close()
 
     # Read in snpeff file
     # The naming convention of the variables and functions comes from a previous functionality
-    out_vcf = None
-    try:
+    if params.snpeff_file:
         if params.rna_file:
-            out_vcf = open('_'.join([params.prefix, 'transgened.vcf']), 'w')
-        snvs = read_snvs(params.snpeff_file, params.rna_file, out_vcf, params.reject_threshold)
-    finally:
-        if out_vcf is not None:
-            out_vcf.close()
-    params.input_file.close()
-    params.snpeff_file.close()
+            with open('_'.join([params.prefix, 'transgened.vcf']), 'w') as out_vcf:
+                snvs = read_snvs(params.snpeff_file, params.rna_file, out_vcf, params.reject_threshold)
+        else:
+            snvs = read_snvs(params.snpeff_file, params.rna_file, None, params.reject_threshold)
+        params.snpeff_file.close()
+    else:
+        snvs = None
+
+    # Load data for generating fusion peptides
+    if params.transcript_file:
+        transcriptome, gene_transcript_ids = get_transcriptome_data(params.transcript_file)
+    else:
+        transcriptome, gene_transcript_ids = None, None
+
+    # Load data from fusion file
+    if params.fusion_file:
+        fusions = read_fusions(params.fusion_file)
+    else:
+        fusions = None
+
+    if params.genome_file and params.annotation_file:
+        exons = get_exons(params.genome_file, params.annotation_file)
+    else:
+        exons = None
+
     for peplen in params.pep_lens.split(','):
         logging.info('Processing %s-mers', peplen)
         outfile1, tumfile_path = mkstemp()
@@ -645,7 +643,11 @@ def main(params):
         os.close(outfile2)
 
         with open(tumfile_path, 'w') as tumfile, open(normfile_path, 'w') as normfile:
-            insert_snvs(chroms, snvs, tumfile, normfile, int(peplen), params.rna_file)
+            if proteome_data and snvs:
+                insert_snvs(proteome_data, snvs, tumfile, normfile, int(peplen), params.rna_file)
+            if transcriptome and gene_transcript_ids and fusions:
+                insert_fusions(transcriptome, fusions, gene_transcript_ids, int(peplen), tumfile, exons=exons)
+
         if params.no_json_dumps:
             shutil.move(tumfile_path, '_'.join([params.prefix, 'tumor', peplen,
                                                 'mer_snpeffed.faa']))
@@ -657,25 +659,42 @@ def main(params):
             os.remove(tumfile_path)
             os.remove(normfile_path)
 
+        # Temporary file used during fusion alignment steps
+        os.remove('transgene_fusion_alignments.pkl')
+
 
 def run_transgene():
     """
     This will try to run transgene from system arguments
     """
     parser = argparse.ArgumentParser(description=main.__doc__)
-    parser.add_argument('--peptides', dest='input_file', type=argparse.FileType('r'), help='Input '
-                        'peptide FASTA file containing translated gencode peptide sequences.',
-                        required=True)
-    parser.add_argument('--snpeff', dest='snpeff_file', type=argparse.FileType('r'),
-                        help='Input snpeff file name', required=True)
-    parser.add_argument('--prefix', dest='prefix', type=str, help='Output FASTQ file prefix',
-                        required=True)
-    parser.add_argument('--pep_lens', dest='pep_lens', type=str, help='Desired peptide lengths to '
-                        'process.  The argument should be in the form of comma separated values.  '
-                        'E.g. 9,15', required=False, default='9,10,15')
-    parser.add_argument('--no_json_dumps', action='store_true', help='Do not educe peptide fasta '
-                        'record names in the output by dumping the mapping info into a .map json '
-                        'file.', required=False, default=False)
+    parser.add_argument('--peptides', dest='peptide_file',
+                        type=argparse.FileType('r'),
+                        help='Path to GENCODE translation FASTA file')
+    parser.add_argument('--transcripts', dest='transcript_file',
+                        type=argparse.FileType('r'),
+                        help='Path to GENCODE transcript FASTA file')
+    parser.add_argument('--snpeff', dest='snpeff_file',
+                        type=argparse.FileType('r'),
+                        help='Path to snpeff file')
+    parser.add_argument('--fusions', dest='fusion_file',
+                        help='Path to gene fusion file',
+                        type=argparse.FileType('r'))
+    parser.add_argument('--genome', dest='genome_file',
+                        help='Path to reference genome file',
+                        type=argparse.FileType('r'))
+    parser.add_argument('--annotation', dest='annotation_file',
+                        help='Path to gencode annotation file',
+                        type=argparse.FileType('r'))
+    parser.add_argument('--prefix', dest='prefix', type=str,
+                        help='Prefix for output file names', required=True)
+    parser.add_argument('--pep_lens', dest='pep_lens', type=str,
+                        help='Desired peptide lengths to process. '
+                             'The argument should be in the form of comma separated values.  '
+                             'E.g. 9,15', required=False, default='9,10,15')
+    parser.add_argument('--no_json_dumps', action='store_true',
+                        help='Do not educe peptide fasta record names in the output by dumping the '
+                             'mapping info into a .map json file.', required=False, default=False)
     parser.add_argument('--rna_file', dest='rna_file', help='The path to an RNA-seq bam file. If '
                         'provided, the vcf will be filtered for coding mutations only. The file '
                         'must be indexed with samtools index.',
@@ -689,7 +708,15 @@ def run_transgene():
                                                                                 'WARNING', 'ERROR'},
                         default='INFO')
     params = parser.parse_args()
+
+    if params.snpeff_file and not params.peptide_file:
+        raise ValueError('VCF file requires GENCODE translation FASTA file')
+
+    if params.fusion_file and not params.transcript_file:
+        raise ValueError('Fusion file requires GENCODE transcripts FASTA file')
+
     return main(params)
+
 
 if __name__ == '__main__':
     sys.exit(run_transgene())
