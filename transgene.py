@@ -336,7 +336,7 @@ def parse_peptides(infile, outfile):
     return None
 
 
-def main():
+def main(params):
     '''
     This tool is used to take a vcf of translated mutations -- i.e. a file that
     has information of the mutation in genomic space (e.g. chr1:47403668) and in
@@ -344,24 +344,6 @@ def main():
     contain 9-, 10- and 15-mer peptides that can be passed to MHC:peptide
     binding prediction tools.
     '''
-    parser = argparse.ArgumentParser(description=main.__doc__)
-    parser.add_argument('--peptides', dest='input_file',
-                        type=argparse.FileType('r'), help='Input peptide' +
-                        ' FASTA file', required=True)
-    parser.add_argument('--snpeff', dest='snpeff_file',
-                        type=argparse.FileType('r'),
-                        help='Input snpeff file name', required=True)
-    parser.add_argument('--prefix', dest='prefix', type=str,
-                        help='Output FASTQ file prefix', required=True)
-    parser.add_argument('--pep_lens', dest='pep_lens', type=str,
-                        help='Desired peptide lengths to process.  The ' +
-                        'argument should be in the form of comma separated ' +
-                        'values.  E.g. 9,15', required=False, default='9,10,15')
-    parser.add_argument('--no_json_dumps', action='store_true',
-                        help='Do not educe peptide fasta record names in the ' +
-                        'output by dumping the mapping info into a .map json ' +
-                        'file.', required=False, default=False)
-    params = parser.parse_args()
 
     # Read the proteomic fasta
     chroms = collections.Counter()
@@ -402,4 +384,22 @@ def main():
             os.remove(outfile_path)
 
 if __name__ == '__main__':
-    sys.exit(main())
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    parser.add_argument('--peptides', dest='input_file',
+                        type=argparse.FileType('r'), help='Input peptide' +
+                                                          ' FASTA file', required=True)
+    parser.add_argument('--snpeff', dest='snpeff_file',
+                        type=argparse.FileType('r'),
+                        help='Input snpeff file name', required=True)
+    parser.add_argument('--prefix', dest='prefix', type=str,
+                        help='Output FASTQ file prefix', required=True)
+    parser.add_argument('--pep_lens', dest='pep_lens', type=str,
+                        help='Desired peptide lengths to process.  The ' +
+                             'argument should be in the form of comma separated ' +
+                             'values.  E.g. 9,15', required=False, default='9,10,15')
+    parser.add_argument('--no_json_dumps', action='store_true',
+                        help='Do not educe peptide fasta record names in the ' +
+                             'output by dumping the mapping info into a .map json ' +
+                             'file.', required=False, default=False)
+    params = parser.parse_args()
+    sys.exit(main(params))
