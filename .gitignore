@@ -1,0 +1,8 @@
+/.idea
+*.pyc
+*.egg*
+.eggs/
+nosetests.xml
+/venv/
+.cache
+__pycache__

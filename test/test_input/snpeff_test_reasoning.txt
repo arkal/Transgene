@@ -1,0 +1,25 @@
+These 4 cases can all club together because there will be an expressed mutation, and 2 non
+expressed stop-inducing mutations for the rna-based run, and cases with stop before and after for
+the non-rna run to see if the correct IARs will be called.
+1. Expressed mutation
+2. Non Expressed mutation
+3. Chained mutation with a stop codon as first mutation. (This can be unexpressed so the chaining
+   will be displayed in the non-rna run)
+4. Chained mutation with a stop codon as second mutation. (This can be unexpressed so the chaining
+   will be displayed in the non-rna run)
+chr6    31671008        .       G       C       .       PASS    ENST00000395952.3:Y>*
+chr6    31671003        .       T       C       .       PASS    ENST00000395952.3:E>G
+chr6    31670992        .       C       A       .       PASS    ENST00000395952.3:E>*
+
+5. Non expressed mutation in a region with <=5 ref reads
+chr6    31670475        .       G       T       .       PASS    ENST00000440843.3:S>Y
+
+These 3 will form 2 possible chains in the non-rna run, and one possible chain in the rna one
+6. Mutation in a non-expressed exon (splice variant)
+chr6    31670394        .       C       T       .       PASS    ENST00000492084.1:G>D
+
+5. Chained mutations
+chr6    31669898        .       A       G       .       PASS    ENST00000492084.1:L>P,ENST00000395952.3:Y>H
+chr6    31670934        .       C       T       .       PASS    ENST00000395952.3:S>N
+
+
