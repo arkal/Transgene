@@ -426,7 +426,7 @@ def get_mutation_groups(p_snvs, peplen, pfasta_name, rna_bam=None):
         return out_groups
 
 
-def insert_snvs(chroms, snvs, outfile, peplen, rna_bam=None):
+def insert_snvs(chroms, snvs, tumfile, normfile, peplen, rna_bam=None):
     """
     This module uses the snv data contained in snvs and inserts them into the genome contained in
     chroms.
@@ -474,13 +474,16 @@ def insert_snvs(chroms, snvs, outfile, peplen, rna_bam=None):
                 if group_muts[0][-1] == '*':
                     continue
                 out_pept = {'pept_name': [pfasta_name],
-                            'pept_seq': []}
+                            'tum_seq': [],
+                            'norm_seq': []
+                            }
                 mut_pos = int(group_muts[0][1:-1])
                 prev = max(mut_pos - peplen, 0)  # First possible AA in the IAR
                 for group_mut in group_muts:
                     mut_pos = int(group_mut[1:-1])
                     out_pept['pept_name'].append(group_mut)
-                    out_pept['pept_seq'].extend(protein[prev:mut_pos - 1])
+                    out_pept['tum_seq'].extend(protein[prev:mut_pos - 1])
+                    out_pept['norm_seq'].extend(protein[prev:mut_pos - 1])
                     if protein[mut_pos-1] != snvs[pept][group_mut]['AA']['REF']:
                         logging.warning('%s seen at position %s in %s.... %s expected.',
                                         chroms[pfasta_name][mut_pos-1], mut_pos, pept,
@@ -488,56 +491,72 @@ def insert_snvs(chroms, snvs, outfile, peplen, rna_bam=None):
                     if snvs[pept][group_mut]['AA']['ALT'] == '*':
                         prev = None
                         break
-                    out_pept['pept_seq'].append(snvs[pept][group_mut]['AA']['ALT'])
+                    out_pept['tum_seq'].append(snvs[pept][group_mut]['AA']['ALT'])
+                    out_pept['norm_seq'].append(snvs[pept][group_mut]['AA']['REF'])
                     prev = mut_pos
                 if prev is not None:
-                    out_pept['pept_seq'].extend(protein[prev:min(mut_pos + peplen - 1,
+                    out_pept['tum_seq'].extend(protein[prev:min(mut_pos + peplen - 1,
+                                                                len(protein))])
+                    out_pept['norm_seq'].extend(protein[prev:min(mut_pos + peplen - 1,
                                                                  len(protein))])
-                write_pepts_to_file(out_pept['pept_name'], out_pept['pept_seq'], outfile, peplen)
+                write_pepts_to_file(out_pept, tumfile, normfile, peplen)
     return None
 
 
-def write_pepts_to_file(peptide_name, peptide_sequence, outfile, peplen):
+def write_pepts_to_file(peptide_info, tumfile, normfile, peplen):
     """
-    This module will accept a peptide name and sequence, and will print then to outfile
+    This module will accept the info for a given peptide including the name, the tumor peptide
+    sequence, and the corresponding normal peptide sequence, and will print then to tumfile and
+    normfile
     """
     blacklist = set(list('BJOUXZ'))
     # If the final peptide contains a blacklisted amino acid,
     # discard it.
-    peptide_name = '_'.join(peptide_name)
-    peptide_sequence = ''.join(peptide_sequence)
-    if not blacklist.isdisjoint(peptide_sequence):
+    peptide_name = '_'.join(peptide_info['pept_name'])
+    tum_peptide_seq = ''.join(peptide_info['tum_seq'])
+    norm_peptide_seq = ''.join(peptide_info['norm_seq'])
+    if not blacklist.isdisjoint(tum_peptide_seq):
         logging.warning('Blacklisted amino acids %s seen in %s.',
-                        list(set(list(peptide_sequence)).intersection(blacklist)), peptide_name)
-    elif len(peptide_sequence) < peplen:
+                        list(set(list(tum_peptide_seq)).intersection(blacklist)), peptide_name)
+    elif len(tum_peptide_seq) < peplen:
         logging.warning('IAR %s is less than %s resides (%s).', peplen, peptide_name,
-                        peptide_sequence)
+                        tum_peptide_seq)
     else:
-        print('>', peptide_name, sep='', file=outfile)
-        print(peptide_sequence, file=outfile)
+        print('>', peptide_name, sep='', file=tumfile)
+        print('>', peptide_name, sep='', file=normfile)
+        print(tum_peptide_seq, file=tumfile)
+        print(norm_peptide_seq, file=normfile)
     return None
 
 
-def parse_peptides(infile, outfile):
+def parse_peptides(tumfile, normfile, prefix, suffix):
     """
     This module takes in a peptides file and squashes it into the minimum number of peptides
     required to describe the potential neo-immunopeptidome.  It's main function is to take
     transcript-level mutation calls and merge them by gene if the sequences they contain are
     identical (to correct for splicing information).
     """
-    with open(infile, 'r') as i_f:
-        peptides = collections.Counter()
+    with open(normfile, 'r') as i_f:
+        normal_peptides = {}
         for pep_name, _, pep_seq in read_fasta(i_f, 'ARNDCQEGHILKMFPSTWYVBZJUOX'):
-            pep_name = pep_name.split('_')
+            normal_peptides[pep_name] = pep_seq
+    with open(tumfile, 'r') as i_f:
+        peptides = collections.Counter()
+        for full_pep_name, _, pep_seq in read_fasta(i_f, 'ARNDCQEGHILKMFPSTWYVBZJUOX'):
+            pep_name = full_pep_name.split('_')
             gene_name = pep_name[0]
             hugo_gene = pep_name[2]
             transcript_mutation = '_'.join([pep_name[1]]+pep_name[3:])
             if peptides[(gene_name, hugo_gene)] == 0:
-                peptides[(gene_name, hugo_gene)] = {transcript_mutation: pep_seq}
+                peptides[(gene_name, hugo_gene)] = {transcript_mutation:
+                                                        (pep_seq, normal_peptides[full_pep_name])}
             else:
-                peptides[(gene_name, hugo_gene)][transcript_mutation] = pep_seq
+                peptides[(gene_name, hugo_gene)][transcript_mutation] = \
+                    (pep_seq, normal_peptides[full_pep_name])
     outmap = {}
-    with open(outfile, 'w') as o_f:
+    out_tum_file = '_'.join([prefix, 'tumor', suffix])
+    out_norm_file = '_'.join([prefix, 'normal', suffix])
+    with open(out_tum_file, 'w') as t_f, open(out_norm_file, 'w') as n_f:
         # Mhc predictors can't handle the giant peptide names created by merging the names of
         # peptide emerging from transcripts bearing similar mutations hence we use an incremental
         # system to name the peptides and store the peptide number to actual peptide name
@@ -545,18 +564,22 @@ def parse_peptides(infile, outfile):
         peptide_number = 1
         for gene in peptides.keys():
             unique_seqs = set(peptides[gene].values())
-            for group in [[x for x, y in peptides[gene].items() if y == z] for z in unique_seqs]:
+            for group in [[x for x, y in peptides[gene].items() if y[0] == z[0]]
+                          for z in unique_seqs]:
                 pepname = ''.join(['neoepitope_', str(peptide_number)])
                 group_info = '\t'.join(list(gene) + [','.join(group)])
-                group_seq = peptides[gene][group[0]]
+                group_tum_seq = peptides[gene][group[0]][0]
+                group_norm_seq = peptides[gene][group[0]][1]
                 # Print to faa files
-                print('>', pepname, sep='', file=o_f)
-                print(group_seq, file=o_f)
+                print('>', pepname, sep='', file=t_f)
+                print('>', pepname, sep='', file=n_f)
+                print(group_tum_seq, file=t_f)
+                print(group_norm_seq, file=n_f)
                 # Save to map dict
                 outmap[pepname] = group_info
                 peptide_number += 1
     #  Json dump the results to file
-    with open(''.join([outfile, '.map']), 'w') as mapfile:
+    with open(''.join([out_tum_file, '.map']), 'w') as mapfile:
         json.dump(outmap, mapfile)
     return None
 
@@ -615,17 +638,23 @@ def main(params):
     params.snpeff_file.close()
     for peplen in params.pep_lens.split(','):
         logging.info('Processing %s-mers', peplen)
-        outfile, outfile_path = mkstemp()
-        os.close(outfile)
-        with open(outfile_path, 'w') as outfile:
-            insert_snvs(chroms, snvs, outfile, int(peplen), params.rna_file)
+        outfile1, tumfile_path = mkstemp()
+        outfile2, normfile_path = mkstemp()
+        os.close(outfile1)
+        os.close(outfile2)
+
+        with open(tumfile_path, 'w') as tumfile, open(normfile_path, 'w') as normfile:
+            insert_snvs(chroms, snvs, tumfile, normfile, int(peplen), params.rna_file)
         if params.no_json_dumps:
-            shutil.move(outfile_path, '_'.join([params.prefix, 'tumor', peplen,
+            shutil.move(tumfile_path, '_'.join([params.prefix, 'tumor', peplen,
                                                 'mer_snpeffed.faa']))
+            shutil.move(normfile_path, '_'.join([params.prefix, 'normal', peplen,
+                                                 'mer_snpeffed.faa']))
         else:
-            parse_peptides(outfile_path, '_'.join([params.prefix, 'tumor', peplen,
-                                                   'mer_snpeffed.faa']))
-            os.remove(outfile_path)
+            parse_peptides(tumfile_path, normfile_path, params.prefix,
+                           '_'.join([peplen, 'mer_snpeffed.faa']))
+            os.remove(tumfile_path)
+            os.remove(normfile_path)
 
 
 def run_transgene():
