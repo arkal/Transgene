@@ -47,7 +47,15 @@ class TransgeneTest(unittest.TestCase):
         shutil.rmtree(self.test_dir)
         os.chdir(self.cwd)
 
-    def test_transgene(self):
+    def test_transgene_with_RNA(self):
+        print('Testing Transgene with RNA')
+        self._test_transgene(use_RNA=True)
+
+    def test_transgene_without_RNA(self):
+        print('Testing Transgene without RNA')
+        self._test_transgene(use_RNA=False)
+
+    def _test_transgene(self, use_RNA=None):
         """
         Tests that transgene runs and checks output files
         """
@@ -57,29 +65,25 @@ class TransgeneTest(unittest.TestCase):
         params.no_json_dumps = False
         params.log_level = 'DEBUG'
         params.reject_threshold = 5
-        for params.rna_file in self._get_input_path('test_input/test.bam'), None:
-            if params.rna_file is not None:
-                print('Testing with RNA')
-            else:
-                print('Testing without RNA')
-            params.input_file = open(self._get_input_path('test_input/test.pc_translations.fa'))
-            params.snpeff_file = open(self._get_input_path('test_input/snpeff_test.vcf'))
-            transgene.main(params)
-            output = {'9mer': {'fasta': 'unit_test_tumor_9_mer_snpeffed.faa',
-                               'map': 'unit_test_tumor_9_mer_snpeffed.faa.map'},
-                      '10mer': {'fasta': 'unit_test_tumor_10_mer_snpeffed.faa',
-                                'map': 'unit_test_tumor_10_mer_snpeffed.faa.map'},
-                      '15mer': {'fasta': 'unit_test_tumor_15_mer_snpeffed.faa',
-                                'map': 'unit_test_tumor_15_mer_snpeffed.faa.map'}}
-            for key,  data in output.iteritems():
-                for feature, filename in data.iteritems():
-                    assert os.path.exists(filename)
-                    self.output_files.add(filename)
-            self.pep_lens = output.keys()
-            self.output = output
-            self.check_output(params.rna_file is not None)
-            params.input_file.close()
-            params.snpeff_file.close()
+        params.rna_file  = self._get_input_path('test_input/test.bam') if use_RNA else None
+        params.input_file = open(self._get_input_path('test_input/test.pc_translations.fa'))
+        params.snpeff_file = open(self._get_input_path('test_input/snpeff_test.vcf'))
+        transgene.main(params)
+        output = {'9mer': {'fasta': 'unit_test_tumor_9_mer_snpeffed.faa',
+                           'map': 'unit_test_tumor_9_mer_snpeffed.faa.map'},
+                  '10mer': {'fasta': 'unit_test_tumor_10_mer_snpeffed.faa',
+                            'map': 'unit_test_tumor_10_mer_snpeffed.faa.map'},
+                  '15mer': {'fasta': 'unit_test_tumor_15_mer_snpeffed.faa',
+                            'map': 'unit_test_tumor_15_mer_snpeffed.faa.map'}}
+        for key,  data in output.iteritems():
+            for feature, filename in data.iteritems():
+                assert os.path.exists(filename)
+                self.output_files.add(filename)
+        self.pep_lens = output.keys()
+        self.output = output
+        self.check_output(params.rna_file is not None)
+        params.input_file.close()
+        params.snpeff_file.close()
 
     def check_output(self, test_with_rna_file):
         """
