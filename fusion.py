@@ -3,11 +3,12 @@ import collections
 import csv
 import logging
 import re
+import string
 from cStringIO import StringIO
 
 import swalign
 
-from common import read_fasta
+from common import read_fasta, GTFRecord
 
 
 # Standard Genetic Code from NCBI
@@ -43,6 +44,24 @@ def get_transcriptome_data(infile):
             gene_transcripts[gene_id].append(transcript_id)
             transcript_cds[transcript_id] = cds
     return transcript_cds, gene_transcripts
+
+
+def get_exons(genome_file, annotation_file):
+    chroms ={}
+    gtfs = collections.defaultdict(list)
+    for header, comment, seq in read_fasta(genome_file, 'ACGTN'):
+        chroms[header] = seq
+
+    for line in annotation_file:
+        if line.startswith('#'):
+            continue
+        else:
+            gtf = GTFRecord(line)
+            if gtf.feature == 'exon':
+                gtf.sequence = chroms[gtf.seqname][gtf.start - 1: gtf.end]
+                gtfs[gtf.transcript_id].append(gtf)
+    return gtfs
+
 
 
 def translate(seq):
@@ -108,13 +127,24 @@ def read_fusions(fusion_file):
 
     return calls
 
+
 def align_filter(ref, query, mode):
+    """
+    Aligns query to reference CDS sequence using the Smith-Waterman algorithm. Returns None if the
+    alignment is clipped at the fusion boundary.
+
+    :param str ref: In-frame reference transcript
+    :param str query: Query transcript
+    :param str mode: 'donor' or 'acceptor'
+    :return: Alignment features
+    :rtype: namedtuple
+    """
     alignment_stats = collections.namedtuple('AlignStats', 'qstart, qstop, rstart, rstop, insertions, deletions')
 
     bounds_regex = re.compile(r'Query\s*:\s*(?P<qstart>\d*)\s*\w*\s*(?P<qstop>\d*)\s*[\|\s]*\s*Ref\s*:\s*(?P<rstart>\d*)\s*\w*\s*(?P<rstop>\d*)')
     match_regex = re.compile(r'Matches: \d+\s\((?P<percent>\d*)')
 
-    match = 2
+    match = 5
     mismatch = -1
     scoring = swalign.NucleotideScoringMatrix(match, mismatch)
     sw = swalign.LocalAlignment(scoring)
@@ -191,7 +221,7 @@ def scan_frame(reference_start):
     return in_frame_adjustment
 
 
-def insert_fusions(transcriptome, fusion_calls, gene_transcripts, peplen, outfile):
+def insert_fusions(transcriptome, fusion_calls, gene_transcripts, peplen, outfile, exons=None):
     """
     Generates fusion peptides for MHC binding prediction.
 
@@ -205,24 +235,52 @@ def insert_fusions(transcriptome, fusion_calls, gene_transcripts, peplen, outfil
 
     found = False
 
+    forward = 'ACGTN'
+    reverse = 'TGCAN'
+
+    trans = string.maketrans(forward, reverse)
+
     # Iterate over fusion calls
     for call in fusion_calls:
-
-        # Check to see if the junction sequence is large enough for neoepitope prediction
-        if len(call.junctionSeq1) // 3 < peplen - 1 or len(call.junctionSeq2) // 3 < 1:
-            continue
 
         logging.info('Processing fusion: %s' % repr(call.name))
 
         donor_name, acceptor_name = call.name.split('-')
+
+        junctionSeq1 = call.junctionSeq1
+        end1 = int(call.end1)
         for donor_transcript_id in gene_transcripts[donor_name]:
-            # print(call.hugo1, call.hugo2)
+            if exons and call.junctionSeq1 == '.':
+                if exons[donor_transcript_id][0].strand == '-':
+                    for exon in exons[donor_transcript_id][::-1]:
+                        # Want start and end greater than breakpoint
+                        if exon.start > end1 and exon.end > end1:
+                            junctionSeq1 = exon.sequence.translate(trans)[::-1]
+                            break
+                        # Breakpoint splits exon
+                        elif exon.start < end1 and exon.end > end1:
+                            seq = exon.sequence[end1: exon.end]    # I think the end1 is zero based
+                            junctionSeq1 = seq.translate(trans)[::-1]
+                            break
+                        # Breakpoint is at beginning of first exon
+                        elif exon.exon_number == '1' and exon.start == end1:
+                            seq = exon.sequence
+                            junctionSeq1 = seq.translate(trans)[::-1]
+
+                else:
+                    for exon in exons[donor_transcript_id]:
+                        pass
+
+
+            # Check to see if the junction sequence is large enough for neoepitope prediction
+            # if len(call.junctionSeq1) // 3 < peplen - 1 or len(call.junctionSeq2) // 3 < 1:
+            #    continue
+
             # Generate the fusion transcript using the GENCODE transcript annotation
             try:
                 donor_transcript = transcriptome[donor_transcript_id]
-                bounds = align_filter(donor_transcript, call.junctionSeq1, 'donor')
+                bounds = align_filter(donor_transcript, junctionSeq1, 'donor')
                 if bounds is None:
-                    # print("DONOR BOUNDS")
                     continue
 
             except KeyError:
@@ -234,9 +292,9 @@ def insert_fusions(transcriptome, fusion_calls, gene_transcripts, peplen, outfil
                 continue
 
             # Slice the donor transcript such that the first base is in-frame
-            # May have a overhang base
+            # May have an overhang base
             donor_start = bounds.qstart + in_frame_adjustment
-            in_frame_donor_seq = call.junctionSeq1[donor_start:]
+            in_frame_donor_seq = junctionSeq1[donor_start:]
             in_frame_donor_seq_len = len(in_frame_donor_seq)
 
             # If acceptor Ensembl ID is not in the GENCODE annotation, then label transcript as not applicable. This
@@ -244,46 +302,71 @@ def insert_fusions(transcriptome, fusion_calls, gene_transcripts, peplen, outfil
             if acceptor_name in gene_transcripts:
                 acceptor_transcript_ids = gene_transcripts[acceptor_name]
 
+            # If we don't know the acceptor transcripts, then skip fusion
             else:
-                acceptor_transcript_ids = ['NA']
+                break
 
             # Now iterate over all possible acceptor transcript sequences
+            start2 = int(call.start2)
             for acceptor_transcript_id in acceptor_transcript_ids:
+                # Use variable for acceptor sequence
+                junctionSeq2 = call.junctionSeq2
+                if exons and junctionSeq2 == '.':
+                    if exons[acceptor_transcript_id][0].strand == '-':
+                        for exon_index, exon in enumerate(exons[acceptor_transcript_id]):
+                            # Want start and end greater than breakpoint
+                            if exon.start < start2 and exon.end <= start2:
+                                junctionSeq2 = exon.sequence.translate(trans)[::-1]
+                                break
+                            # Breakpoint splits exon
+                            elif exon.start < start2 and exon.end > start2:
+                                seq = exon.sequence[exon.start - 1: end1]    # I think the end1 is zero based
+                                junctionSeq2 = seq.translate(trans)[::-1]
+                                break
+                            # Breakpoint is at beginning of first exon
+                            elif exons[acceptor_transcript_id].index(exon) == 0 and exon.end == start2:
+                                seq = exon.sequence
+                                junctionSeq2 = seq.translate(trans)[::-1]
+
+                    else:
+                        for exon in exons[donor_transcript_id]:
+                            pass
+
+                if junctionSeq1 == junctionSeq2 == '.':
+                    continue
+
                 acceptor_in_frame_adjustment = None
                 try:
                     acceptor_transcript = transcriptome[acceptor_transcript_id]
 
                     # Find the position of the transcript where the predicted donor sequence starts
-                    acceptor_bounds = align_filter(acceptor_transcript, call.junctionSeq2, 'acceptor')
+                    acceptor_bounds = align_filter(acceptor_transcript, junctionSeq2, 'acceptor')
 
                     # If the acceptor sequence could not be found, move onto the next transcript
                     if acceptor_bounds is None:
-                        # print('ACCEPTOR BOUNDS')
                         continue
 
                     acceptor_in_frame_adjustment = scan_frame(acceptor_bounds.rstart)
                     if acceptor_in_frame_adjustment is None:
-                        # print('Acceptor frame adjustment')
                         continue
 
                 # If we can't find a transcript for the acceptor, then continue without a transcript ID
                 except KeyError:
                     pass
 
-                acceptor_frame_shift = False
-
                 # Figure out if frame-shift occurred as a result of the fusion
+                acceptor_frame_shift = False
                 # If we don't have a reference transcript, then just continue without this information
                 if acceptor_in_frame_adjustment is None:
                     pass
 
-                # TODO need to develop this more
                 # There could be an indel that corrects the frame downstream
                 elif (in_frame_donor_seq_len % 3 + acceptor_in_frame_adjustment) % 3 != 0:
+                    logging.warn('%s--%s has a 3\' frame shift' % (call.hugo1, call.hugo2))
                     acceptor_frame_shift = True
 
                 # Use the donor and acceptor sequences to generate the fusion transcript
-                fusion_seq = in_frame_donor_seq + call.junctionSeq2
+                fusion_seq = in_frame_donor_seq + junctionSeq2
 
                 # The fusion peptide for MHC binding prediction includes all sliding windows that would generate a
                 # novel peptide sequence. Therefore, the donor sequence starts at the position of the last donor codon
@@ -342,4 +425,4 @@ def insert_fusions(transcriptome, fusion_calls, gene_transcripts, peplen, outfil
                 found = True
 
     if not found:
-        logging.warn("Did not generate any fusion peptides from data")
+        logging.warn("Did not generate any fusion peptides from data!")

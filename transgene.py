@@ -24,7 +24,7 @@ import shutil
 import sys
 
 from common import read_fasta
-from fusion import get_transcriptome_data, read_fusions, insert_fusions
+from fusion import get_transcriptome_data, read_fusions, insert_fusions, get_exons
 
 
 # A named tuple describing the result of running reject_mutation on a mutation.
@@ -578,7 +578,7 @@ def get_proteome_data(infile):
 
 def main(params):
     """
-    Transgene accepts a vcf of translated mutations -- i.e. a file that has information of the
+    Transgene accepts a SnpEffed vcf of translated mutations -- i.e. a file that has information of the
     mutation in genomic space (e.g. chr1:47403668) and in proteomic space (e.g.
     ENST00000371904.4:D113N) -- and outputs files that contain n-mer peptides (n>0) that can be
     passed to MHC:peptide binding prediction tools. Additionally, this tool accepts gene fusion
@@ -628,6 +628,11 @@ def main(params):
     else:
         fusions = None
 
+    if params.genome_file and params.annotation_file:
+        exons = get_exons(params.genome_file, params.annotation_file)
+    else:
+        exons = None
+
     for peplen in params.pep_lens.split(','):
         logging.info('Processing %s-mers', peplen)
         outfile1, tumfile_path = mkstemp()
@@ -639,7 +644,7 @@ def main(params):
             if proteome_data and snvs:
                 insert_snvs(proteome_data, snvs, tumfile, normfile, int(peplen), params.rna_file)
             if transcriptome and gene_transcript_ids and fusions:
-                insert_fusions(transcriptome, fusions, gene_transcript_ids, int(peplen), tumfile)
+                insert_fusions(transcriptome, fusions, gene_transcript_ids, int(peplen), tumfile, exons=exons)
         if params.no_json_dumps:
             shutil.move(tumfile_path, '_'.join([params.prefix, 'tumor', peplen,
                                                 'mer_snpeffed.faa']))
@@ -668,6 +673,12 @@ def run_transgene():
                         help='Path to snpeff file')
     parser.add_argument('--fusions', dest='fusion_file',
                         help='Path to gene fusion file',
+                        type=argparse.FileType('r'))
+    parser.add_argument('--genome', dest='genome_file',
+                        help='Path to reference genome file',
+                        type=argparse.FileType('r'))
+    parser.add_argument('--annotation', dest='annotation_file',
+                        help='Path to gencode annotation file',
                         type=argparse.FileType('r'))
     parser.add_argument('--prefix', dest='prefix', type=str,
                         help='Prefix for output file names', required=True)

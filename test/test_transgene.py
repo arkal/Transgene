@@ -70,6 +70,8 @@ class TransgeneTest(unittest.TestCase):
         params.snpeff_file = open(self._get_input_path('test_input/snpeff_test.vcf'))
         params.transcript_file = open(self._get_input_path('test_input/test.pc_transcripts.fa'))
         params.fusion_file = open(self._get_input_path('test_input/test_fusions.bedpe'))
+        params.annotation_file = open(self._get_input_path('test_input/gencode.v19.chr21.annotation.gtf'))
+        params.genome_file = open(self._get_input_path('test_input/chr21.fa'))
         transgene.main(params)
         output = {'9mer': {'fasta': 'unit_test_tumor_9_mer_snpeffed.faa',
                            'map': 'unit_test_tumor_9_mer_snpeffed.faa.map'},
@@ -104,7 +106,8 @@ class TransgeneTest(unittest.TestCase):
                      'SQLETYKRQEDPKWEF',    # HOOK3-RET fusion
                      'QSSSYGQQTASGDMQT',    # EWSR1-ATF1 fusion
                      'VVCTQPKSPSSTPVSP',    # TMPRSS2-ETV1 fusion
-                     'QSSSYGQQSPPLGGAQ'},   # EWSR1-FLI fusion
+                     'QSSSYGQQSPPLGGAQ',    # EWSR1-FLI fusion
+                     'NSKMALNSEALSVVSE'},   # TMPRSS2-ERG fusion
             '10mer': {'GELAGGGYVPSAPCPGETC',  # ENST00000492084.1:L56P
                       'LEFQNDFYRYCIRRSSPQP',  # ENST00000440843.2:S24Y
                       'GPRLYKIYRGRDSERAPAS',  # ENST00000395952.3:E19G
@@ -112,7 +115,8 @@ class TransgeneTest(unittest.TestCase):
                       'RSQLETYKRQEDPKWEFP',   # HOOK3-RET fusion
                       'QQSSSYGQQTASGDMQTY',   # EWSR1-ATF1 fusion
                       'PVVCTQPKSPSSTPVSPL',   # TMPRSS2-ETV1 fusion
-                      'QQSSSYGQQSPPLGGAQT'},  # EWSR1-FLI fusion
+                      'QQSSSYGQQSPPLGGAQT',   # EWSR1-FLI fusion
+                      'DNSKMALNSEALSVVSED'},
             '15mer': {'ESLYSGELAGGGYVPSAPCPGETC',  # ENST00000492084.1:L56P
                       'SLYPRLEFQNDFYRYCIRRSSPQPPPNLA',  # ENST00000440843.2:S24Y
                       'LSCVLGPRLYKIYRGRDSERAPASVPETP',  # ENST00000395952.3:E19G
@@ -120,7 +124,8 @@ class TransgeneTest(unittest.TestCase):
                       'KANAARSQLETYKRQEDPKWEFPRKNLV',   # HOOK3-RET fusion
                       'PSQYSQQSSSYGQQTASGDMQTYQIRTT',   # EWSR1-ATF1 fusion
                       'TQASNPVVCTQPKSPSSTPVSPLHHASP',   # TMPRSS2-ETV1 fusion
-                      'PSQYSQQSSSYGQQSPPLGGAQTISKNT'}   # EWSR1-FLI fusion
+                      'PSQYSQQSSSYGQQSPPLGGAQTISKNT',    # EWSR1-FLI fusion
+                      'LLDAVDNSKMALNSEALSVVSEDQSLFE'}
         }
         if not test_with_rna_file:
             expected_peptides['9mer'].update([
