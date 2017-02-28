@@ -609,17 +609,18 @@ def main(params):
     logging.info('Reading the Input fasta file')
     chroms = collections.Counter()
     for fa_seq in read_fasta(params.input_file, 'ARNDCQEGHILKMFPSTWYVBZJUOX'):
-        #  Fastq headers are ALWAYS 7 |-separated fields long. The fields are
-        #  0. Ensembl Transcript         -- e.g ENST00000511116.1
-        #  1. Ensembl Gene               -- e.g ENSG00000113658.12
-        #  2. Havana Gene                -- e.g OTTHUMG00000163212.3
-        #  3. Havana Transcript          -- e.g OTTHUMT00000372098.1
-        #  4. HGNC gene splice variant   -- e.g SMAD5-003
-        #  5. HUGO name / HGNC symbol    -- e.g SMAD5
-        #  6. Length in AA residues      -- e.g 134
-        #  We need columns 1, 2,  and 6
+        #  Fastq headers are ALWAYS 7 or 8 |-separated fields long. The fields are
+        #  0a. Ensembl Peptide (optional) -- e.g ENSP00000334393.3
+        #  0b. Ensembl Transcript         -- e.g ENST00000335137.3
+        #  1. Ensembl Gene                -- e.g ENSG00000186092.4
+        #  2. Havana Gene                 -- e.g OTTHUMG00000001094.2
+        #  3. Havana Transcript           -- e.g OTTHUMT00000003223.2
+        #  4. HGNC gene splice variant    -- e.g OR4F5-001
+        #  5. HUGO name / HGNC symbol     -- e.g OR4F5
+        #  6. Length in AA residues       -- e.g 305
+        #  We need columns 0b, 1,  and 5
         try:
-            record_name = '_'.join(itemgetter(1, 0, 5)(fa_seq[0].split('|')))
+            record_name = '_'.join(itemgetter(-6, -7, -2)(fa_seq[0].split('|')))
         except IndexError:
             raise RuntimeError('Was the input peptides file obtained from Gencode?')
         chroms[record_name] = list(fa_seq[2])
@@ -662,22 +663,19 @@ def run_transgene():
     This will try to run transgene from system arguments
     """
     parser = argparse.ArgumentParser(description=main.__doc__)
-    parser.add_argument('--peptides', dest='input_file',
-                        type=argparse.FileType('r'), help='Input peptide' +
-                                                          ' FASTA file', required=True)
-    parser.add_argument('--snpeff', dest='snpeff_file',
-                        type=argparse.FileType('r'),
+    parser.add_argument('--peptides', dest='input_file', type=argparse.FileType('r'), help='Input '
+                        'peptide FASTA file containing translated gencode peptide sequences.',
+                        required=True)
+    parser.add_argument('--snpeff', dest='snpeff_file', type=argparse.FileType('r'),
                         help='Input snpeff file name', required=True)
-    parser.add_argument('--prefix', dest='prefix', type=str,
-                        help='Output FASTQ file prefix', required=True)
-    parser.add_argument('--pep_lens', dest='pep_lens', type=str,
-                        help='Desired peptide lengths to process.  The ' +
-                             'argument should be in the form of comma separated ' +
-                             'values.  E.g. 9,15', required=False, default='9,10,15')
-    parser.add_argument('--no_json_dumps', action='store_true',
-                        help='Do not educe peptide fasta record names in the ' +
-                             'output by dumping the mapping info into a .map json ' +
-                             'file.', required=False, default=False)
+    parser.add_argument('--prefix', dest='prefix', type=str, help='Output FASTQ file prefix',
+                        required=True)
+    parser.add_argument('--pep_lens', dest='pep_lens', type=str, help='Desired peptide lengths to '
+                        'process.  The argument should be in the form of comma separated values.  '
+                        'E.g. 9,15', required=False, default='9,10,15')
+    parser.add_argument('--no_json_dumps', action='store_true', help='Do not educe peptide fasta '
+                        'record names in the output by dumping the mapping info into a .map json '
+                        'file.', required=False, default=False)
     parser.add_argument('--rna_file', dest='rna_file', help='The path to an RNA-seq bam file. If '
                         'provided, the vcf will be filtered for coding mutations only. The file '
                         'must be indexed with samtools index.',
