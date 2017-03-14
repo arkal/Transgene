@@ -659,7 +659,8 @@ def main(params):
             os.remove(tumfile_path)
             os.remove(normfile_path)
 
-        # Temporary file used during fusion alignment steps
+    # Temporary file used during fusion alignment steps
+    if os.path.exists('transgene_fusion_alignments.pkl'):
         os.remove('transgene_fusion_alignments.pkl')
 
 
