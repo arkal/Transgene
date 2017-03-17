@@ -65,13 +65,16 @@ class TransgeneTest(unittest.TestCase):
         params.no_json_dumps = False
         params.log_level = 'DEBUG'
         params.reject_threshold = 5
-        params.rna_file = self._get_input_path('test_input/test.bam') if use_RNA else None
+        params.rna_file = self._get_input_path('test_input/test_rna.bam') if use_RNA else None
         params.peptide_file = open(self._get_input_path('test_input/test.pc_translations.fa'))
         params.snpeff_file = open(self._get_input_path('test_input/snpeff_test.vcf'))
         params.transcript_file = open(self._get_input_path('test_input/test.pc_transcripts.fa'))
         params.fusion_file = open(self._get_input_path('test_input/test_fusions.bedpe'))
         params.annotation_file = open(self._get_input_path('test_input/gencode.v19.chr21.annotation.gtf'))
         params.genome_file = open(self._get_input_path('test_input/chr21.fa'))
+        params.dna_file = None
+        params.oxog_threshold = None
+        params.cores = 3
         transgene.main(params)
         output = {'9mer': {'fasta': 'unit_test_tumor_9_mer_snpeffed.faa',
                            'map': 'unit_test_tumor_9_mer_snpeffed.faa.map'},
