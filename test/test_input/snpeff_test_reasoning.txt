@@ -14,7 +14,7 @@ chr6    31670992        .       C       A       .       PASS    ENST00000395952.
 5. Non expressed mutation in a region with <=5 ref reads
 chr6    31670475        .       G       T       .       PASS    ENST00000440843.3:S>Y
 
-These 3 will form 2 possible chains in the non-rna run, and one possible chain in the rna one
+These 3 will form 2 possible chains in the non-rna run, and one possible chain in the rna one.
 6. Mutation in a non-expressed exon (splice variant)
 chr6    31670394        .       C       T       .       PASS    ENST00000492084.1:G>D
 
@@ -22,4 +22,7 @@ chr6    31670394        .       C       T       .       PASS    ENST00000492084.
 chr6    31669898        .       A       G       .       PASS    ENST00000492084.1:L>P,ENST00000395952.3:Y>H
 chr6    31670934        .       C       T       .       PASS    ENST00000395952.3:S>N
 
+6. This FAKE mutation is not expressed but it contains an "n+1 error in the position called by
+snpeff".
+chr6    31874794        .       A       G       .       PASS   ENST00000229729.10:F>L
 

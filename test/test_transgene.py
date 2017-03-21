@@ -113,7 +113,8 @@ class TransgeneTest(unittest.TestCase):
                 'SLYSGELADGGYLSLSK',  # ENST00000440843.2:G51D
                 'PRLYKIYRGRDS',  # ENST00000395952.3:E19GXXXY17*
                 'TAVTAPHSNSWDTYYQP',  # ENST00000395952.3:S42N
-                'HSSSWDTYHQPRALEKH'  # ENST00000395952.3:Y48H
+                'HSSSWDTYHQPRALEKH',  # ENST00000395952.3:Y48H
+                'PWTVGKNELSQTVGEVF'  # ENST00000229729.10:F>L
             ])
             expected_peptides['10mer'].update([
                 'ESLYSGELADGGYVPSAPCPGETC',  # ENST00000492084.1:G51DXXXXL56P
@@ -121,7 +122,8 @@ class TransgeneTest(unittest.TestCase):
                 'ESLYSGELADGGYLSLSKV',  # ENST00000440843.2:G51D
                 'GPRLYKIYRGRDS',  # ENST00000395952.3:E19GXXXY17*
                 'PTAVTAPHSNSWDTYYQPR',  # ENST00000395952.3:S42N
-                'PHSSSWDTYHQPRALEKHA'  # ENST00000395952.3:Y48H
+                'PHSSSWDTYHQPRALEKHA',  # ENST00000395952.3:Y48H
+                'DPWTVGKNELSQTVGEVFY'  # ENST00000229729.10:F>L
             ])
             expected_peptides['15mer'].update([
                 'LAWRPESLYSGELADGGYVPSAPCPGETC',  # ENST00000492084.1:G51DXXXXL56P
@@ -129,7 +131,8 @@ class TransgeneTest(unittest.TestCase):
                 'LAWRPESLYSGELADGGYLSLSKVVPFSH',  # ENST00000440843.2:G51D
                 'LSCVLGPRLYKIYRGRDS',  # ENST00000395952.3:E19GXXXY17*
                 'SVPETPTAVTAPHSNSWDTYYQPRALEKH',  # ENST00000395952.3:S42N
-                'TAVTAPHSSSWDTYHQPRALEKHADSILA'  # ENST00000395952.3:Y48H
+                'TAVTAPHSSSWDTYHQPRALEKHADSILA',  # ENST00000395952.3:Y48H
+                'SSCPEDPWTVGKNELSQTVGEVFYTKNRN'  # ENST00000229729.10:F>L
             ])
         # Compare test output to expected output
         for kmer in self.output.keys():
