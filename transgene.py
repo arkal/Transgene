@@ -191,8 +191,10 @@ def read_snvs(snpeff_file, rna_file=None, out_vcf=None, reject_threshold=None):
                         temp[3]: {
                             'AA': {'REF': temp[3][0], 'ALT': temp[3][-1]},
                             'NUC': {'REF': line['REF'], 'ALT': line['ALT'], 'POS': line['POS'],
-                                    'CHROM': line['CHROM']}
-                        }
+                                    'CHROM': line['CHROM']},
+
+                        },
+                        'len': int(temp[4])  # Record what snpeff thinks is the proteint length.
                     })
                 else:
                     snvs[temp[8]][temp[3]] = {
@@ -421,8 +423,36 @@ def insert_snvs(chroms, snvs, tumfile, normfile, peplen, rna_bam=None):
         # the group.  If there are no neighboring mutations, the group contains only the mutation
         # itself.
         pfasta_name = [x for x in chroms.keys() if ''.join([pept, '_']) in x][0]
-        all_mutation_groups = get_mutation_groups(snvs[pept], peplen, pfasta_name, rna_bam)
+        # We have all the mutations and the protein sequence here. Do a sanity check on the results.
         protein = chroms[pfasta_name]
+        if 'len' in snvs[pept]:
+            # If 'len' is not in this dict, it means a previous process has already cleaned up the
+            # dict. This will need to change if this module is multithreaded.
+            expected_tlen = snvs[pept].pop('len')
+            for mutation in snvs[pept].keys():
+                mut_pos = int(mutation[1:-1])
+                if protein[mut_pos - 1] != snvs[pept][mutation]['AA']['REF']:
+                    logging.warning('%s seen at position %s in %s.... %s expected.',
+                                    chroms[pfasta_name][mut_pos - 1], mut_pos, pept,
+                                    snvs[pept][mutation]['AA']['REF'])
+                    if len(chroms[pfasta_name]) - expected_tlen in (1, 2):
+                        # This is a case seen often with SNPEff where the n+1 position will have
+                        # the mutation.  Check the n+1 residue
+                        if protein[mut_pos] == snvs[pept][mutation]['AA']['REF']:
+                            logging.info('Mutation at position %s in %s detected to exist at '
+                                         'position %s.', mut_pos, pept, mut_pos + 1)
+                            new_mutation = ''.join([snvs[pept][mutation]['AA']['REF'],
+                                                    str(mut_pos + 1),
+                                                    snvs[pept][mutation]['AA']['ALT']])
+                            snvs[pept][new_mutation] = snvs[pept][mutation]
+                            snvs[pept].pop(mutation)
+                    else:
+                        logging.warning('Cannot handle mutation at position %s in %s. '
+                                        'Disregarding.', mut_pos, pept)
+                        snvs[pept].pop(mutation)
+        if not snvs[pept]:
+            continue
+        all_mutation_groups = get_mutation_groups(snvs[pept], peplen, pfasta_name, rna_bam)
         for mut_group in all_mutation_groups:
             for group_muts in mut_group:
                 # If the first mutation in the group is a stop gain, it does not yield any
@@ -441,10 +471,6 @@ def insert_snvs(chroms, snvs, tumfile, normfile, peplen, rna_bam=None):
                     out_pept['pept_name'].append(group_mut)
                     out_pept['tum_seq'].extend(protein[prev:mut_pos - 1])
                     out_pept['norm_seq'].extend(protein[prev:mut_pos - 1])
-                    if protein[mut_pos-1] != snvs[pept][group_mut]['AA']['REF']:
-                        logging.warning('%s seen at position %s in %s.... %s expected.',
-                                        chroms[pfasta_name][mut_pos-1], mut_pos, pept,
-                                        snvs[pept][group_mut]['AA']['REF'])
                     if snvs[pept][group_mut]['AA']['ALT'] == '*':
                         prev = None
                         break
@@ -473,10 +499,10 @@ def write_pepts_to_file(peptide_info, tumfile, normfile, peplen):
     tum_peptide_seq = ''.join(peptide_info['tum_seq'])
     norm_peptide_seq = ''.join(peptide_info['norm_seq'])
     if not blacklist.isdisjoint(tum_peptide_seq):
-        logging.warning('Blacklisted amino acids %s seen in %s.',
+        logging.warning('Blacklisted amino acids %s seen in IAR %s.  Discarding.',
                         list(set(list(tum_peptide_seq)).intersection(blacklist)), peptide_name)
     elif len(tum_peptide_seq) < peplen:
-        logging.warning('IAR %s is less than %s resides (%s).', peplen, peptide_name,
+        logging.warning('IAR %s is less than %s residues (%s).', peplen, peptide_name,
                         tum_peptide_seq)
     else:
         print('>', peptide_name, sep='', file=tumfile)
