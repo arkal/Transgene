@@ -54,6 +54,33 @@ def read_fasta(input_file, alphabet):
         yield [seq_id, seq_comments, seq.upper()]
 
 
+def chrom_sort(in_chroms):
+    """
+    Sort a list of chromosomes in the order 1..22, X, Y, M.
+
+    :param list in_chroms: Input chromsomes
+    :return: Sorted chromosomes
+    :rtype: list[str]
+    """
+    chr_prefix = False
+    if in_chroms[0].startswith('chr'):
+        in_chroms = [x.lstrip('chr') for x in in_chroms]
+        chr_prefix = True
+    assert in_chroms[0] in [str(x) for x in range(1, 23)] + ['X', 'Y', 'M']
+    in_chroms = sorted(in_chroms, key=lambda c: int(c) if c not in ('X', 'Y', 'M') else c)
+    try:
+        m_index = in_chroms.index('M')
+    except ValueError:
+        pass
+    else:
+        in_chroms.pop(m_index)
+        in_chroms.append('M')
+    # At this point it should be nicely sorted
+    if chr_prefix:
+        in_chroms = [''.join(['chr', x]) for x in in_chroms]
+    return in_chroms
+
+
 class GTFRecord(object):
     def __init__(self, line):
         """

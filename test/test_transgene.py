@@ -47,15 +47,39 @@ class TransgeneTest(unittest.TestCase):
         shutil.rmtree(self.test_dir)
         os.chdir(self.cwd)
 
-    def test_transgene_with_RNA(self):
-        print('Testing Transgene with RNA')
-        self._test_transgene(use_RNA=True)
+    def test_transgene_RNA_WXS_FUSION(self):
+        print('Testing Transgene with FUSIONS using RNA and DNA.')
+        self._test_transgene(use_RNA=True, use_DNA=True, fusions=True)
 
-    def test_transgene_without_RNA(self):
-        print('Testing Transgene without RNA')
-        self._test_transgene(use_RNA=False)
+    def test_transgene_RNA_WXS_xFUSION(self):
+        print('Testing Transgene without FUSIONS using RNA and DNA.')
+        self._test_transgene(use_RNA=True, use_DNA=True, fusions=False)
 
-    def _test_transgene(self, use_RNA=None):
+    def test_transgene_RNA_xWXS_FUSION(self):
+        print('Testing Transgene with FUSIONS using only RNA.')
+        self._test_transgene(use_RNA=True, use_DNA=False, fusions=True)
+
+    def test_transgene_RNA_xWXS_xFUSION(self):
+        print('Testing Transgene without FUSIONS using only RNA.')
+        self._test_transgene(use_RNA=True, use_DNA=False, fusions=False)
+
+    def test_transgene_xRNA_WXS_FUSION(self):
+        print('Testing Transgene with FUSIONS using only DNA.')
+        self._test_transgene(use_RNA=False, use_DNA=True, fusions=True)
+
+    def test_transgene_xRNA_WXS_xFUSION(self):
+        print('Testing Transgene without FUSIONS using only DNA.')
+        self._test_transgene(use_RNA=False, use_DNA=True, fusions=False)
+
+    def test_transgene_xRNA_xWXS_FUSION(self):
+        print('Testing Transgene with FUSIONS using no sequence-based filtering.')
+        self._test_transgene(use_RNA=False, use_DNA=False, fusions=True)
+
+    def test_transgene_xRNA_xWXS_xFUSION(self):
+        print('Testing Transgene without FUSIONS using no sequence-based filtering.')
+        self._test_transgene(use_RNA=False, use_DNA=False, fusions=False)
+
+    def _test_transgene(self, use_RNA=False, use_DNA=False, fusions=False):
         """
         Tests that transgene runs and checks output files
         """
@@ -64,14 +88,26 @@ class TransgeneTest(unittest.TestCase):
         params.pep_lens = '9,10,15'
         params.no_json_dumps = False
         params.log_level = 'DEBUG'
+        params.logfile = None
+
         params.reject_threshold = 5
-        params.rna_file = self._get_input_path('test_input/test.bam') if use_RNA else None
+        params.rna_file = self._get_input_path('test_input/test_rna.bam') if use_RNA else None
+        params.rna_min_alt_freq = 0.1 if use_RNA else None
         params.peptide_file = open(self._get_input_path('test_input/test.pc_translations.fa'))
         params.snpeff_file = open(self._get_input_path('test_input/snpeff_test.vcf'))
         params.transcript_file = open(self._get_input_path('test_input/test.pc_transcripts.fa'))
-        params.fusion_file = open(self._get_input_path('test_input/test_fusions.bedpe'))
-        params.annotation_file = open(self._get_input_path('test_input/gencode.v19.chr21.annotation.gtf'))
-        params.genome_file = open(self._get_input_path('test_input/chr21.fa'))
+
+        params.filter_oxog = use_DNA
+        params.dna_file = self._get_input_path('test_input/test_dna.bam') if use_DNA else None
+        params.oxog_min_alt_freq = 0.1 if use_DNA else None
+
+        params.fusion_file = open(self._get_input_path('test_input/test_fusions.'
+                                                       'bedpe')) if fusions else None
+        params.annotation_file = open(self._get_input_path('test_input/gencode.v19.chr21.'
+                                                           'annotation.gtf')) if fusions else None
+        params.genome_file = open(self._get_input_path('test_input/chr21.fa')) if fusions else None
+
+        params.cores = 3
         transgene.main(params)
         output = {'9mer': {'fasta': 'unit_test_tumor_9_mer_snpeffed.faa',
                            'map': 'unit_test_tumor_9_mer_snpeffed.faa.map'},
@@ -85,47 +121,32 @@ class TransgeneTest(unittest.TestCase):
                 self.output_files.add(filename)
         self.pep_lens = output.keys()
         self.output = output
-        self.check_output(params.rna_file is not None)
+        self.check_output(use_RNA, use_DNA, fusions)
         params.peptide_file.close()
         params.snpeff_file.close()
         params.transcript_file.close()
-        params.fusion_file.close()
+        if fusions:
+            params.fusion_file.close()
 
-    def check_output(self, test_with_rna_file):
+    def check_output(self, test_with_rna_file, test_with_dna_file, test_with_fusions):
         """
         Check the output from transgene
 
         :param test_with_rna_file: Was this test run with the rna expression?
+        :param test_with_dna_file: Was this test run with the DNA bam?
+        :param test_with_fusions: Was this test looking at fusions?
         """
         alpha = 'ARNDCQEGHILKMFPSTWYVBZJUOX'
         expected_peptides = {
             '9mer': {'ELAGGGYVPSAPCPGET',  # ENST00000492084.1:L56P
-                     'EFQNDFYRYCIRRSSPQ',  # ENST00000440843.2:S24Y
                      'PRLYKIYRGRDSERAPA',  # ENST00000395952.3:E19G
-                     'TAVTAPHSNSWDTYHQPRALEKH',  # ENST00000395952.3:S42NXXXXXY48H
-                     'SQLETYKRQEDPKWEF',    # HOOK3-RET fusion
-                     'QSSSYGQQTASGDMQT',    # EWSR1-ATF1 fusion
-                     'VVCTQPKSPSSTPVSP',    # TMPRSS2-ETV1 fusion
-                     'QSSSYGQQSPPLGGAQ',    # EWSR1-FLI fusion
-                     'NSKMALNSEALSVVSE'},   # TMPRSS2-ERG fusion
+                     'TAVTAPHSNSWDTYHQPRALEKH'},  # ENST00000395952.3:S42NXXXXXY48H
             '10mer': {'GELAGGGYVPSAPCPGETC',  # ENST00000492084.1:L56P
-                      'LEFQNDFYRYCIRRSSPQP',  # ENST00000440843.2:S24Y
                       'GPRLYKIYRGRDSERAPAS',  # ENST00000395952.3:E19G
-                      'PTAVTAPHSNSWDTYHQPRALEKHA',  # ENST00000395952.3:S42NXXXXXY48H
-                      'RSQLETYKRQEDPKWEFP',   # HOOK3-RET fusion
-                      'QQSSSYGQQTASGDMQTY',   # EWSR1-ATF1 fusion
-                      'PVVCTQPKSPSSTPVSPL',   # TMPRSS2-ETV1 fusion
-                      'QQSSSYGQQSPPLGGAQT',   # EWSR1-FLI fusion
-                      'DNSKMALNSEALSVVSED'},  # TMPRSS2-ERG fusion
+                      'PTAVTAPHSNSWDTYHQPRALEKHA'},  # ENST00000395952.3:S42NXXXXXY48H
             '15mer': {'ESLYSGELAGGGYVPSAPCPGETC',  # ENST00000492084.1:L56P
-                      'SLYPRLEFQNDFYRYCIRRSSPQPPPNLA',  # ENST00000440843.2:S24Y
                       'LSCVLGPRLYKIYRGRDSERAPASVPETP',  # ENST00000395952.3:E19G
-                      'SVPETPTAVTAPHSNSWDTYHQPRALEKHADSILA',  # ENST00000395952.3:S42NXXXXXY48H
-                      'KANAARSQLETYKRQEDPKWEFPRKNLV',   # HOOK3-RET fusion
-                      'PSQYSQQSSSYGQQTASGDMQTYQIRTT',   # EWSR1-ATF1 fusion
-                      'TQASNPVVCTQPKSPSSTPVSPLHHASP',   # TMPRSS2-ETV1 fusion
-                      'PSQYSQQSSSYGQQSPPLGGAQTISKNT',   # EWSR1-FLI fusion
-                      'LLDAVDNSKMALNSEALSVVSEDQSLFE'}   # TMPRSS2-ERG fusion
+                      'SVPETPTAVTAPHSNSWDTYHQPRALEKHADSILA'}  # ENST00000395952.3:S42NXXXXXY48H
         }
         if not test_with_rna_file:
             expected_peptides['9mer'].update([
@@ -155,6 +176,44 @@ class TransgeneTest(unittest.TestCase):
                 'TAVTAPHSSSWDTYHQPRALEKHADSILA',  # ENST00000395952.3:Y48H
                 'SSCPEDPWTVGKNELSQTVGEVFYTKNRN'  # ENST00000229729.10:F>L
             ])
+            if not test_with_dna_file:
+                # Then add the OXOG STUFF
+                expected_peptides['9mer'].update([
+                    'EFQNDFYRYCIRRSSPQ',  # ENST00000440843.2:S24Y
+                    'ATGAPPRRKRVPGRACP'  # ENST00000375331.2:Q>K
+                ])
+                expected_peptides['10mer'].update([
+                    'LEFQNDFYRYCIRRSSPQP',  # ENST00000440843.2:S24Y
+                    'VATGAPPRRKRVPGRACPW'  # ENST00000375331.2:Q>K
+                ])
+                expected_peptides['15mer'].update([
+                    'SLYPRLEFQNDFYRYCIRRSSPQPPPNLA',  # ENST00000440843.2:S24Y
+                    'EVDTNVATGAPPRRKRVPGRACPWREPIR'  # ENST00000375331.2:Q>K
+                ])
+        if test_with_fusions:
+            # Then add the OXOG STUFF
+            expected_peptides['9mer'].update([
+                'SQLETYKRQEDPKWEF',    # HOOK3-RET fusion
+                'QSSSYGQQTASGDMQT',    # EWSR1-ATF1 fusion
+                'VVCTQPKSPSSTPVSP',    # TMPRSS2-ETV1 fusion
+                'QSSSYGQQSPPLGGAQ',    # EWSR1-FLI fusion
+                'NSKMALNSEALSVVSE'   # TMPRSS2-ERG fusion
+            ])
+            expected_peptides['10mer'].update([
+                'RSQLETYKRQEDPKWEFP',  # HOOK3-RET fusion
+                'QQSSSYGQQTASGDMQTY',  # EWSR1-ATF1 fusion
+                'PVVCTQPKSPSSTPVSPL',  # TMPRSS2-ETV1 fusion
+                'QQSSSYGQQSPPLGGAQT',  # EWSR1-FLI fusion
+                'DNSKMALNSEALSVVSED'  # TMPRSS2-ERG fusion
+            ])
+            expected_peptides['15mer'].update([
+                'KANAARSQLETYKRQEDPKWEFPRKNLV',  # HOOK3-RET fusion
+                'PSQYSQQSSSYGQQTASGDMQTYQIRTT',  # EWSR1-ATF1 fusion
+                'TQASNPVVCTQPKSPSSTPVSPLHHASP',  # TMPRSS2-ETV1 fusion
+                'PSQYSQQSSSYGQQSPPLGGAQTISKNT',  # EWSR1-FLI fusion
+                'LLDAVDNSKMALNSEALSVVSEDQSLFE'  # TMPRSS2-ERG fusion
+            ])
+
         # Compare test output to expected output
         for kmer in self.output.keys():
             observed_fasta = self.output[kmer]['fasta']
@@ -166,7 +225,7 @@ class TransgeneTest(unittest.TestCase):
                     # There are more observed than expected
                     print('Unexpected {}s called by transgene: {}'.format(kmer, ','.join(
                         observed_seqs - expected_peptides[kmer])))
-                elif expected_peptides[kmer] - observed_seqs:
+                if expected_peptides[kmer] - observed_seqs:
                     # There are more expected than observed
                     print('Transgene failed to predict some {}s: {}'.format(kmer, ','.join(
                         expected_peptides[kmer] - observed_seqs)))
