@@ -43,8 +43,9 @@ def get_transcriptome_data(infile):
             start = int(match.group("start")) - 1
             stop = int(match.group("stop"))
             cds = seq[start: stop]
-
             gene_transcripts[gene_id].append(transcript_id)
+            # Save transcript to gene ID mapping
+            gene_transcripts[transcript_id] = match.group("gene_id")
             transcript_cds[transcript_id] = cds
     return transcript_cds, gene_transcripts
 
@@ -359,7 +360,7 @@ def insert_fusions(transcriptome, fusion_calls, gene_transcripts, peplen, outfil
         with open('transgene_fusion_alignments.pkl') as f:
             previous_alignments = pickle.load(f)
 
-    except IOError:
+    except (OSError, IOError):
         previous_alignments = {}
 
     # Iterate over fusion calls
@@ -527,13 +528,16 @@ def insert_fusions(transcriptome, fusion_calls, gene_transcripts, peplen, outfil
                                                                                2 * peplen - 2,
                                                                                len(fusion_peptide)))
 
+                gencode_donor_id = gene_transcripts[donor_transcript_id]
+                gencode_acceptor_id = gene_transcripts[acceptor_transcript_id]
+
                 # Write fusion neoepitope sequence to FASTA file
                 fasta = '>{donor_gene}-{acceptor_gene}_' \
                         '{donor_transcript}-{acceptor_transcript}_' \
                         '{donor_hugo}-{acceptor_hugo}_' \
                         'FUSION_{score}\n' \
-                        '{sequence}\n'.format(donor_gene=donor_name,
-                                              acceptor_gene=acceptor_name,
+                        '{sequence}\n'.format(donor_gene=gencode_donor_id,
+                                              acceptor_gene=gencode_acceptor_id,
                                               donor_transcript=donor_transcript_id,
                                               acceptor_transcript=acceptor_transcript_id,
                                               donor_hugo=call.hugo1,
@@ -558,13 +562,14 @@ def insert_fusions(transcriptome, fusion_calls, gene_transcripts, peplen, outfil
 
                         logging.debug('Created fusion frameshift peptide:\n%s' % shift_peptide)
 
+
                         # Write frameshift peptide to FASTA file
                         fasta = '>{donor_gene}-{acceptor_gene}_' \
                                 '{donor_transcript}-{acceptor_transcript}_' \
                                 '{donor_hugo}-{acceptor_hugo}_' \
                                 'FUSION_ACCEPTOR_FRAMESHIFT\n' \
-                                '{sequence}\n'.format(donor_gene=donor_name,
-                                                      acceptor_gene=acceptor_name,
+                                '{sequence}\n'.format(donor_gene=gencode_donor_id,
+                                                      acceptor_gene=gencode_acceptor_id,
                                                       donor_transcript=donor_transcript_id,
                                                       acceptor_transcript=acceptor_transcript_id,
                                                       donor_hugo=call.hugo1,
