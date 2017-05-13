@@ -521,12 +521,13 @@ def insert_fusions(transcriptome, fusion_calls, gene_transcripts, peplen, outfil
                 # This may occur if the fusion sequence occurs near the end of the transcript. Warn the user, but
                 # still output the fusion peptide because there is at least one fusion sequence that can be generated
                 # from it.
-                if len(fusion_peptide) != 2 * peplen - 2:
+                if len(fusion_peptide) < peplen:
                     logging.warning('Fusion peptide %s-%s is malformed.\n'
                                     'Expected peptide of length %d, got %d' % (donor_name,
                                                                                acceptor_name,
                                                                                2 * peplen - 2,
                                                                                len(fusion_peptide)))
+                    break
 
                 gencode_donor_id = gene_transcripts[donor_transcript_id]
                 gencode_acceptor_id = gene_transcripts[acceptor_transcript_id]
