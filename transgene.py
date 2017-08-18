@@ -360,19 +360,27 @@ def read_snvs(snpeff_file, rna_file=None, out_vcf=None, reject_threshold=None,
     for vcf in worker_vcfs:
         # Delete the temp vcfs now that we're done with them.40
         os.remove(worker_vcfs[vcf])
-    if len(snvs) == 0:
+
+    # Merge the dict structure into a dict of dicts
+    out_snvs = collections.defaultdict(dict)
+    non_syn_seen = False
+
+    for transcript, mut, tlen in snvs.keys():
+        out_snvs[transcript][mut] = snvs[(transcript, mut, tlen)]
+        if not non_syn_seen and mut[0] != mut[-1] and mut[-1] != '*':
+            # If we haven't seen a non_synonymous mutation, and this is non synonymous, update the
+            # flag
+            non_syn_seen = True
+        # probably overkill
+        if 'len' in out_snvs[transcript]:
+            assert out_snvs[transcript]['len'] == int(tlen)
+        else:
+            out_snvs[transcript]['len'] = int(tlen)
+
+    if not (out_snvs and non_syn_seen):
         raise RuntimeError('Input snpeffed mutations file was empty or had no actionable '
                            'mutations.')
-    else:
-        out_snvs = collections.defaultdict(dict)
-        # Merge the dict structure into a dict of dicts
-        for transcript, mut, tlen in snvs.keys():
-            out_snvs[transcript][mut] = snvs[(transcript, mut, tlen)]
-            # probably overkill
-            if 'len' in out_snvs[transcript]:
-                assert out_snvs[transcript]['len'] == int(tlen)
-            else:
-                out_snvs[transcript]['len'] = int(tlen)
+
     return dict(out_snvs)
 
 
