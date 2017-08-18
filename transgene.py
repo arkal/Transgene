@@ -378,6 +378,7 @@ def read_snvs(snpeff_file, rna_file=None, out_vcf=None, reject_threshold=None,
             out_snvs[transcript]['len'] = int(tlen)
 
     if not (out_snvs and non_syn_seen):
+        logging.error('Input snpeffed mutations file was empty or had no actionable mutations.')
         raise RuntimeError('Input snpeffed mutations file was empty or had no actionable '
                            'mutations.')
 
