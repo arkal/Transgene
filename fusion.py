@@ -1,23 +1,14 @@
 from __future__ import print_function
+
 import collections
 import csv
 import logging
 import pickle
 import re
-import string
 from cStringIO import StringIO
 
 import swalign
-
-from common import read_fasta, GTFRecord, trans
-
-# Standard Genetic Code from NCBI
-amino = 'FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG'
-base1 = 'TTTTTTTTTTTTTTTTCCCCCCCCCCCCCCCCAAAAAAAAAAAAAAAAGGGGGGGGGGGGGGGG'
-base2 = 'TTTTCCCCAAAAGGGGTTTTCCCCAAAAGGGGTTTTCCCCAAAAGGGGTTTTCCCCAAAAGGGG'
-base3 = 'TCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAG'
-genetic_code = {''.join([b1, b2, b3]): aa
-                for aa, b1, b2, b3 in zip(amino, base1, base2, base3)}
+from common import read_fasta, trans, BEDPE, translate
 
 
 def get_transcriptome_data(infile):
@@ -49,56 +40,53 @@ def get_transcriptome_data(infile):
     return transcript_cds, gene_transcripts
 
 
-def get_exons(genome_file, annotation_file):
+def rna_gene_in_bedpe(record):
     """
-    Generates list of GTFRecord objects for each transcript
+    Determine if one of the two candidates in a BEDPE line is an rna gene.
 
-    :param file genome_file: Reference genome FASTA file
-    :param file annotation_file: Genome annotation file (GTF)
-    :return: GTFRecord exons
-    :rtype: dict
+    :param BEDPE record: A BEDPE line from the input file
+    :returns: True if one of the candidates is an RNA gene and False if not
+    :rtype: bool
     """
-    chroms = {}
-    exons = collections.defaultdict(list)
-    for header, comment, seq in read_fasta(genome_file, 'ACGTN'):
-        chroms[header] = seq
-
-    for line in annotation_file:
-        if line.startswith('#'):
-            continue
-        else:
-            gtf = GTFRecord(line)
-            if gtf.feature == 'exon':
-                gtf.sequence = chroms[gtf.seqname][gtf.start - 1: gtf.end]
-                exons[gtf.transcript_id].append(gtf)
-    return exons
+    #  We will accept fusions that have an RP11- (lncRNA) 3' partner since they can still be
+    # translated. This is a heuristic.
+    return 'RP11-' in record.hugo1
 
 
-def translate(seq):
+def readthrough_in_bedpe(record, annotation, rt_threshold):
     """
-    Translates DNA sequence into protein sequence using globally defined genetic code
+    Determine if the two genes in the record are within `rt_threshold` bp of each other on the same
+    chromosome.
 
-    :param str seq: DNA sequence
-    :returns: Translated sequence
-    :rtype: str
-
-    >>> translate('ATGTTTCGTT')
-    'MFR'
+    :param BEDPE record: A BEDPE line from the input file
+    :param dict(str, GTFRecord) annotation: see `read_fusions:gene_annotations`
+    :param rt_threshold: The genomic distance on the same chromosome below which we will call a
+           candidate fusion a readthrough.
+    :returns: True if the pair is considered a readthrough and False if not
+    :rtype: bool
     """
-    start = 0
-    n = len(seq)
-    codons = (seq[i: i+3] for i in range(start, n - n % 3, 3))
-    protein = [genetic_code[codon] for codon in codons]
-    return ''.join(protein)
+    return (record.chrom1 == record.chrom2 and
+            ((annotation[record.hugo1].start <= annotation[record.hugo2].start <=
+                annotation[record.hugo1].end + rt_threshold) or
+             (annotation[record.hugo2].start <= annotation[record.hugo1].start <=
+                annotation[record.hugo2].end + rt_threshold)))
 
 
-def read_fusions(fusion_file):
+def read_fusions(fusion_file, gene_annotations, filter_mt, filter_ig, filter_rg, filter_rt,
+                 rt_threshold, out_bedpe):
     """
     Reads in gene fusion predictions in modified BEDPE format.
     In addition to the basic BEDPE features, this function requires the fusion
     junction sequences and HUGO names for the donor and acceptor genes.
 
     :param file fusion_file: Fusion calls in BEDPE format
+    :param dict(str, GTFRecord) gene_annotations: The gene annotations from the gtf
+    :param bool filter_mt: Filter mitochondrial events?
+    :param bool filter_ig: Filter immunoglobulin pairs?
+    :param bool filter_rg: Filter RNA-Gene events?
+    :param bool filter_rt: Filter transcriptional read-throughs?
+    :param int rt_threshold: Distance threshold to call a readthrough
+    :param file out_bedpe: A file handle to an output BEDPE file
     :returns: list of BEDPE namedtuples
     :rtype: list
 
@@ -118,30 +106,48 @@ def read_fusions(fusion_file):
     hugo1:          HUGO name for first feature
     hugo2:          HUGO name for second feature
     """
-    BEDPE = collections.namedtuple('BEDPE',
-                                   'chrom1, start1, end1, '
-                                   'chrom2, start2, end2, '
-                                   'name, score, '
-                                   'strand1, strand2, '
-                                   'junctionSeq1, junctionSeq2, '
-                                   'hugo1, hugo2')
 
     calls = []
+
     for line in csv.reader(fusion_file, delimiter='\t'):
         if line[0].startswith('#'):
+            print('\t'.join(line), file=out_bedpe)
             continue
         try:
-            calls.append(BEDPE(*line))
-
+            record = BEDPE(*line)
         except TypeError:
             raise ValueError("ERROR: fusion file is malformed.\n{}".format(read_fusions.__doc__))
+
+        if filter_mt and 'M' in record.chrom1 or 'M' in record.chrom2:
+            logging.warning("Rejecting %s-%s for containing a Mitochondrial gene.", record.hugo1,
+                            record.hugo2)
+            continue
+        elif filter_ig and record.hugo1.startswith('IG') and record.hugo2.startswith('IG'):
+            # This will drop some Insulin-like growth factor (IGF) proteins but they have a lot of
+            # homology too so its ok.
+            logging.warning("Rejecting %s-%s an an Immunoglobulin gene pair.", record.hugo1,
+                            record.hugo2)
+            continue
+        elif filter_rg and rna_gene_in_bedpe(record):
+            logging.warning("Rejecting %s-%s for containing a 5' RNA gene.", record.hugo1,
+                            record.hugo2)
+            continue
+        elif filter_rt and readthrough_in_bedpe(record, gene_annotations, rt_threshold):
+            logging.warning("Rejecting %s-%s as a potential readthrough.", record.hugo1,
+                            record.hugo2)
+            continue
+        else:
+            logging.info("Accepting %s-%s for further study.", record.hugo1, record.hugo2)
+            print('\t'.join(line), file=out_bedpe)
+            calls.append(record)
 
     return calls
 
 # Namedtuple for storing alignment metrics
-# Neeeds to be global for pickling
+# Needs to be global for pickling
 AlignStats = collections.namedtuple('AlignStats',
                                     'qstart, qstop, rstart, rstop, insertions, deletions')
+
 
 def align_filter(ref, query, mode, mismatches_per_kb=1):
     """

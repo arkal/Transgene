@@ -181,3 +181,85 @@ reject_decision = collections.namedtuple('reject_decision', (
     'coverage',
     # The variant allele frequency
     'vaf'))
+
+# Standard Genetic Code from NCBI
+amino = 'FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG'
+base1 = 'TTTTTTTTTTTTTTTTCCCCCCCCCCCCCCCCAAAAAAAAAAAAAAAAGGGGGGGGGGGGGGGG'
+base2 = 'TTTTCCCCAAAAGGGGTTTTCCCCAAAAGGGGTTTTCCCCAAAAGGGGTTTTCCCCAAAAGGGG'
+base3 = 'TCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAG'
+genetic_code = {''.join([b1, b2, b3]): aa
+                for aa, b1, b2, b3 in zip(amino, base1, base2, base3)}
+
+
+BEDPE = collections.namedtuple('BEDPE',
+                               'chrom1, start1, end1, '
+                               'chrom2, start2, end2, '
+                               'name, '
+                               'score, '
+                               'strand1, strand2, '
+                               'junctionSeq1, junctionSeq2, '
+                               'hugo1, hugo2')
+
+
+def get_exons(genome_file, annotation_file, genes_of_interest):
+    """
+    Generates list of GTFRecord objects for each transcript
+
+    :param file genome_file: Reference genome FASTA file
+    :param file annotation_file: Genome annotation file (GTF)
+    :param set(str) genes_of_interest: The genes in this sample that might need translation.
+    :return: GTFRecord exons
+    :rtype: dict
+    """
+    annotation_file.seek(0)
+    chroms = {}
+    exons = collections.defaultdict(list)
+    for header, comment, seq in read_fasta(genome_file, 'ACGTN'):
+        chroms[header] = seq
+
+    for line in annotation_file:
+        if line.startswith('#'):
+            continue
+        else:
+            gtf = GTFRecord(line)
+            if gtf.feature == 'exon' and gtf.gene_name in genes_of_interest:
+                gtf.sequence = chroms[gtf.seqname][gtf.start - 1: gtf.end]
+                exons[gtf.transcript_id].append(gtf)
+    return exons
+
+
+def read_genes_from_gtf(gtf_file):
+    """
+    Read the gene annotations into a dict
+
+    :param file gtf_file: A file handle ot the annotation file.
+    :returns:  A dict of a gtf record for each gene
+    :rtype: dict(string, GTFRecord)
+    """
+    gene_annotations = {}
+    for line in gtf_file:
+        if line.startswith('#'):
+            continue
+        else:
+            gtf = GTFRecord(line)
+            if gtf.feature == 'gene':
+                gene_annotations[gtf.gene_name] = gtf
+    return gene_annotations
+
+
+def translate(seq):
+    """
+    Translates DNA sequence into protein sequence using globally defined genetic code
+
+    :param str seq: DNA sequence
+    :returns: Translated sequence
+    :rtype: str
+
+    >>> translate('ATGTTTCGTT')
+    'MFR'
+    """
+    start = 0
+    n = len(seq)
+    codons = (seq[i: i+3] for i in range(start, n - n % 3, 3))
+    protein = [genetic_code[codon] for codon in codons]
+    return ''.join(protein)
