@@ -220,7 +220,7 @@ def get_alignment_info(rna_bam, dna_bam, vcf_record):
             for read in pileup.pileups:
                 if not (read.is_refskip or read.is_del):
                     base = read.alignment.seq[read.query_position]
-                    if ord(read.alignment.qual[read.query_position]) >= 30:
+                    if ord(read.alignment.qual[read.query_position]) >= 63:  # (33PHRED + 30 QUAL)
                         output_counts_[base]['counts'] += 1
                         if read.alignment.is_read2:
                             output_counts_[base]['r'] += 1
