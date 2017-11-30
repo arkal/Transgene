@@ -1,4 +1,6 @@
 import collections
+import gzip
+import os
 import re
 
 
@@ -8,6 +10,7 @@ import string
 forward = 'ACGTN'
 reverse = 'TGCAN'
 trans = string.maketrans(forward, reverse)
+
 
 def read_fasta(input_file, alphabet):
     """
@@ -203,17 +206,19 @@ BEDPE = collections.namedtuple('BEDPE',
 
 def get_exons(genome_file, annotation_file, genes_of_interest):
     """
-    Generates list of GTFRecord objects for each transcript
+    Generates list of GTFRecord objects for each transcript and the position of the start codon
+    in a separate dict
 
     :param file genome_file: Reference genome FASTA file
     :param file annotation_file: Genome annotation file (GTF)
     :param set(str) genes_of_interest: The genes in this sample that might need translation.
-    :return: GTFRecord exons
-    :rtype: dict
+    :return: list GTFRecord of exons for each transcript, metadata for each transcript
+    :rtype: dict(str, list(GTFRecord)), dict(str, int|bool)
     """
     annotation_file.seek(0)
     chroms = {}
     exons = collections.defaultdict(list)
+    cds_starts = {}
     for header, comment, seq in read_fasta(genome_file, 'ACGTN'):
         chroms[header] = seq
 
@@ -225,7 +230,9 @@ def get_exons(genome_file, annotation_file, genes_of_interest):
             if gtf.feature == 'exon' and gtf.gene_name in genes_of_interest:
                 gtf.sequence = chroms[gtf.seqname][gtf.start - 1: gtf.end]
                 exons[gtf.transcript_id].append(gtf)
-    return exons
+            elif gtf.feature == 'start_codon' and gtf.gene_name in genes_of_interest:
+                cds_starts[gtf.transcript_id] = gtf.start
+    return exons, cds_starts
 
 
 def read_genes_from_gtf(gtf_file):
@@ -263,3 +270,64 @@ def translate(seq):
     codons = (seq[i: i+3] for i in range(start, n - n % 3, 3))
     protein = [genetic_code[codon] for codon in codons]
     return ''.join(protein)
+
+
+def first_mismatch(str1, str2):
+    """
+    Returns the position of the first mismatch between 2 strings.
+
+    :param str1: The first string
+    :param str2: The second string
+    :return: Position of the first mismatch else -1 if no mismatches
+
+    >>> first_mismatch('abc', 'def')
+    0
+    >>> first_mismatch('abc', 'abe')
+    2
+    >>> first_mismatch('abc', 'abc')
+    -1
+    >>> first_mismatch('abc', 'abcde')
+    -1
+    """
+    for i, j in enumerate(zip(str1, str2)):
+        if j[0] != j[1]:
+            return i
+    else:
+        return -1
+
+
+def is_gzipfile(filename):
+    """
+    Attempt to ascertain the gzip status of a file based on the "magic signatures" of the file.
+
+    This was taken from the stack overflow post
+    http://stackoverflow.com/questions/13044562/python-mechanism-to-identify-compressed-file-type\
+        -and-uncompress
+
+    :param str filename: A path to a file
+    :return: True if the file appears to be gzipped else false
+    :rtype: bool
+    """
+    assert os.path.exists(filename), 'Input {} does not point to a file.'.format(filename)
+    with open(filename, 'rb') as in_f:
+        start_of_file = in_f.read(3)
+        if start_of_file == '\x1f\x8b\x08':
+            return True
+        else:
+            return False
+
+
+def file_type(filename):
+    """
+    This module is used to open an input file in the appropriate method dependiing on whether it is a
+    regular file, a gzipped
+    file or a url.
+
+    :param str filename: The path to the file
+    :return: an open file handle to the file
+    :rtype: file
+    """
+    if is_gzipfile(filename):
+        return gzip.GzipFile(filename, 'r')
+    else:
+        return open(filename, 'r')
