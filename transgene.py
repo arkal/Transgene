@@ -9,42 +9,33 @@ Program info can be found in the docstring of the main function
 """
 from __future__ import division, print_function
 
-import random
-from functools import partial
-from multiprocessing import Manager, Pool
-from operator import itemgetter
-from tempfile import mkstemp
-
 import argparse
 import collections
 import json
 import logging
 import os
 import pysam
+import random
 import re
 import shutil
 import sys
 
-from common import read_fasta, chrom_sort
+from functools import partial
+from multiprocessing import Manager, Pool
+from operator import itemgetter
+from tempfile import mkstemp
+
+from common import read_fasta, chrom_sort, reject_decision, trans
 from fusion import get_transcriptome_data, read_fusions, insert_fusions, get_exons
+from snv import reject_snv
 
 
-# A named tuple describing the result of running reject_mutation on a mutation.
-reject_decision = collections.namedtuple('reject_decision', (
-    # The decision on whether to reject the mutation or not
-    'reject',
-    # The reason for rejection, if decision == True
-    'reason',
-    # The number of reads at the position
-    'coverage'))
-
-
-def reject_mutation(snv, rna_bam=None, reject_threshold=None, rna_min_alt_freq=None,
-                    dna_bam=None, oxog_min_alt_freq=None):
+def reject_mutation(call, rna_bam=None, reject_threshold=None, rna_min_alt_freq=None, dna_bam=None,
+                    oxog_min_alt_freq=None):
     """
     Decide whether the mutation should be rejected based on the expression filter.
 
-    :param dict snv: A single vcf record split by the tab character and keyed by the fields
+    :param dict call: A single vcf record split by the tab character and keyed by the fields
     :param str rna_bam: The path to the RNA-seq file. Can be None suggesting that expression
            filtering should not be carried out.
     :param int reject_threshold: The read coverage above which we reject a no-ALT-coverage event
@@ -57,184 +48,31 @@ def reject_mutation(snv, rna_bam=None, reject_threshold=None, rna_min_alt_freq=N
 
     :return: A named tuple of the True/False if the mutation should be rejected or not, and a reason
     for rejection
-    :rtype: reject_decision
+    :rtype: tuple(reject_decison)
     """
     # We need either a rna bam or a dna bam to operate
     assert rna_bam or dna_bam, "Cannot filter without at least one bam file."
-    bams = {'rna': rna_bam,
-            'dna': dna_bam}
-    logging.info('Processing mutation at position %s:%s', snv['CHROM'], snv['POS'] + 1)
-    output_counts, reads = get_alignment_info(rna_bam, dna_bam, snv)
-    reject = None
-    possible_oxog_artefact = False
-    low_rna_covereage = None
-    rna_alt_freq = None
-    coverage = '/'.join([','.join([str(reads[x]['rna']),
-                                   str(reads[x]['dna'])]) for x in ('covering', 'spanning')])
-    # Very importantly, we first look at dna and then rna
-    for bam in 'dna', 'rna':
-        # index
-        if bams[bam] is None:
-            continue
-        if reads['spanning'][bam] == 0:
-            logging.warning('Mutation at position %s:%s has no coverage in the %s-seq bam. '
-                            'Rejecting.', snv['CHROM'], snv['POS'] + 1, bam.upper())
-            reject = reject_decision(reject=True, reason='NoReadCoverage', coverage=coverage)
-            break
-        elif reads['covering'][bam] == 0 and bam == 'rna':
-            # This concept of covering vs spanning reads is only in RNA-Seq.
-            # I.e. you can have spanning reads but none of them covered the mutation (split).
-            logging.warning('Mutation at position %s:%s appears to be in a region that has no '
-                            'coverage in the RNA-seq bam, but has %s spanning reads. Possible '
-                            'splicing event. Rejecting.', snv['CHROM'], snv['POS'] + 1,
-                            reads['spanning'][bam])
-            reject = reject_decision(reject=True, reason='SpliceDetected', coverage=coverage)
-            break
-        elif output_counts[bam][snv['ALT']]['counts'] == 0:
-            # This branch will only be hit in RNA-seq cases since 0 Alt will probably never be
-            # called by a mutations caller.  If we don't have too many reads over the location, it
-            # could either be an undersampled location, or a splice.
-            assert bam == 'rna'  # Sanity
-            if (reads['covering'][bam] < reject_threshold and
-                    reads['spanning'][bam] < reject_threshold):
-                if possible_oxog_artefact:
-                    # Flagged for RNA rescue but could not be rescued.
-                    logging.debug('Mutation at position %s:%s has no evidence of existence in the '
-                                  'RNA-seq bam. Possible OxoG variant. rejecting',
-                                  snv['CHROM'], snv['POS'] + 1)
-                    reject = reject_decision(reject=True, reason='OxoGArtefactLowAlt',
-                                             coverage=coverage)
-                    break
-                else:
-                    logging.debug('Mutation at position %s:%s has no evidence of existence in the '
-                                  'RNA-seq bam. However the coverage at the region (%s/%s '
-                                  'reads::Covering/spanning) is below the threshold for rejecting '
-                                  '(%s). Accepting.', snv['CHROM'], snv['POS'] + 1,
-                                  reads['covering']['rna'], reads['spanning']['rna'],
-                                  reject_threshold)
-                    low_rna_covereage = True
-            else:
-                logging.warning('Mutation at position %s:%s has no evidence of existence in the '
-                                '%s-seq bam. Coverage = %s/%s reads (Covering/spanning). '
-                                'Rejecting.', snv['CHROM'], snv['POS'] + 1, bam.upper(),
-                                reads['covering'][bam], reads['spanning'][bam])
-                reject = reject_decision(reject=True, reason='NoAltDetected', coverage=coverage)
-                break
+    logging.info('Processing %s>%s mutation at position %s:%s', call['REF'], call['ALT'],
+                 call['CHROM'], call['POS'] + 1)
+    if len(call['REF']) == len(call['ALT']):
+        return reject_snv(call, rna_bam, reject_threshold, rna_min_alt_freq, dna_bam,
+                          oxog_min_alt_freq),
+    else:
+        if ',' in call['ALT']:
+            # MAV.
+            alts = call['ALT'].split(',')
+            decisions = []
+            for i, alt in enumerate(alts):
+                # Modify this for each call to reject_snv
+                call['ALT'] = alt
+                decisions.append(reject_snv(call, rna_bam, reject_threshold, rna_min_alt_freq,
+                                            dna_bam, oxog_min_alt_freq))
+            # Return it to the original state
+            call['ALT'] = ','.join(alts)
+            return tuple(decisions)
         else:
-            alt_freq = (output_counts[bam][snv['ALT']]['counts'] /
-                        sum([output_counts[bam][x]['counts'] for x in output_counts[bam]]))
-            if bam == 'dna':
-                # This can only mean we want OxoG filtering
-                if (snv['REF'], snv['ALT']) in (('C', 'A'), ('G', 'T')):
-                    if alt_freq <= oxog_min_alt_freq:
-                        logging.warning('Mutation at position %s:%s has less than %s ALT allele '
-                                        'frequency (%s) in the %s-seq bam. Possible oxoG artefact. '
-                                        'Flagging for RNA rescue.', snv['CHROM'], snv['POS'] + 1,
-                                        oxog_min_alt_freq, round(alt_freq, 2), bam.upper())
-                        possible_oxog_artefact = True
-                    elif 0 in [output_counts[bam][snv['ALT']][x] for x in 'fr']:
-                        # If either number of 'f'orward or 'r'everse reads is a 0 it means all reads
-                        # came from only one strand and hence is possibly an oxoG artefact.
-                        if output_counts[bam][snv['ALT']]['f']:
-                            dominant_strand = 'forward'
-                        else:
-                            dominant_strand = 'reverse'
-                        logging.warning('Mutation at position %s:%s is called from reads '
-                                        'originating only from %s reads in the %s-seq bam. '
-                                        'Possible oxoG artefact. Rejecting.', snv['CHROM'],
-                                        snv['POS'] + 1, dominant_strand, bam.upper())
-                        if dominant_strand == 'forward':
-                            reject = reject_decision(reject=True, reason='OxoGArtefactAllFwd',
-                                                     coverage=coverage)
-                        else:
-                            reject = reject_decision(reject=True, reason='OxoGArtefactAllRev',
-                                                     coverage=coverage)
-                        break
-            else:  # rna
-                if alt_freq < rna_min_alt_freq:
-                    logging.warning('Mutation at position %s:%s has less than %s ALT allele '
-                                    'frequency (%s) in the %s-seq bam. Rejecting.',
-                                    snv['CHROM'], snv['POS'] + 1, rna_min_alt_freq,
-                                    round(alt_freq, 4), bam.upper())
-                    reject = reject_decision(reject=True, reason='LowAltFrequency',
-                                             coverage=coverage)
-                else:
-                    rna_alt_freq = alt_freq
-    if reject is None:
-        # This means the call has not been rejected for any reason. It may have still have been
-        # flagged so we need to handle that.
-        if possible_oxog_artefact:
-            if rna_bam:
-                assert rna_alt_freq is not None
-                logging.debug('Mutation at position %s:%s with has evidence in the RNA-Seq '
-                              '(ALT frequency = %s) despite being flagged as a possible OxoG '
-                              'artefect. Accepting', snv['CHROM'], snv['POS'] + 1, rna_alt_freq)
-                reject = reject_decision(reject=False, reason='PossibleOxoGArtefactLowAltRNARescue',
-                                         coverage=coverage)
-            else:
-                logging.warning('Mutation at position %s:%s was flagged as possible oxoG artefact '
-                                'and could not be rescued without matching RNA-Seq. Rejecting',
-                                snv['CHROM'], snv['POS'] + 1)
-                reject = reject_decision(reject=True, reason='OxoGArtefactLowAlt',
-                                         coverage=coverage)
-        else:
-            reason = 'LowRNACoverage' if low_rna_covereage else ''
-            logging.debug('Accepted mutation at position %s:%s with %s read coverage.',
-                          snv['CHROM'], snv['POS'] + 1, coverage)
-            reject = reject_decision(reject=False, reason=reason, coverage=coverage)
-    return reject
-
-
-def get_alignment_info(rna_bam, dna_bam, vcf_record):
-    """
-
-    :param str rna_bam: Path to the RNA-Seq bam file
-    :param str dna_bam: Path to the DNA-Seq bam file
-    :param dict vcf_record: A single vcf record split by the tab character and keyed by the fields
-    :return: information about the alignment at the position in the vcf record
-             Output_counts- The counts of all nucleotides at the position in 'rna' and 'dna', and
-             the counts of reads mapping to the 'f'orward and 'r'everse strands for each nucleotide.
-             reads - The counts of reads mapping at ('covering') and across ('spanning') the
-             position in 'rna' and 'dna'
-    :rtype: tuple(collections.Counter|collections.defaultdict(Collections.Counter), dict(dict))
-    """
-    bams = {'rna': rna_bam, 'dna': dna_bam}
-    output_counts = {'rna': collections.Counter(), 'dna': collections.Counter()}
-    reads = {'spanning': {'rna': '.', 'dna': '.'},
-             'covering': {'rna': '.', 'dna': '.'}}
-    for bam in bams:
-        if not bams[bam]:
-            continue
-        samfile = pysam.Samfile(bams[bam], 'rb')
-        output_counts_ = collections.defaultdict(collections.Counter)
-        covering_reads = 0
-        spanning_reads = 0
-        try:
-            pileups = samfile.pileup(vcf_record['CHROM'], vcf_record['POS'],
-                                    vcf_record['POS'] + 1, truncate=True)
-            pileup = pileups.next()
-        except StopIteration:
-            # This means there was no coverage at the locus
-            pass
-        else:
-            for read in pileup.pileups:
-                if not (read.is_refskip or read.is_del):
-                    base = read.alignment.seq[read.query_position]
-                    if ord(read.alignment.qual[read.query_position]) >= 63:  # (33PHRED + 30 QUAL)
-                        output_counts_[base]['counts'] += 1
-                        if read.alignment.is_read2:
-                            output_counts_[base]['r'] += 1
-                        else:
-                            output_counts_[base]['f'] += 1
-                    covering_reads += 1
-                spanning_reads += 1
-
-        finally:
-            samfile.close()
-        reads['spanning'][bam] = spanning_reads
-        reads['covering'][bam] = covering_reads
-        output_counts[bam] = output_counts_
-    return output_counts, reads
+            # Indel
+            return reject_decision(reject=True, reason='INDEL', coverage='.,./.,.', vaf=0.0),
 
 
 def write_to_vcf(data, out_vcf, header=False):
@@ -256,8 +94,8 @@ def write_to_vcf(data, out_vcf, header=False):
               file=out_vcf)
 
 
-def read_snvs(snpeff_file, rna_file=None, out_vcf=None, reject_threshold=None,
-              rna_min_alt_freq=None, dna_file=None, oxog_min_alt_freq=None, processes=1):
+def read_snpeffed_vcf(snpeff_file, rna_file=None, out_vcf=None, reject_threshold=None,
+                      rna_min_alt_freq=None, dna_file=None, oxog_min_alt_freq=None, processes=1):
     """
     This module reads in the SNVs from the SnpEffed vcf file. It assumes that the SnpEff results
     have been writen to the INFO column. If the header contains a line that starts with  `#CHROM`,
@@ -279,11 +117,11 @@ def read_snvs(snpeff_file, rna_file=None, out_vcf=None, reject_threshold=None,
            being oxoG artifacts.
     :param int processes: How many processes should handle the parsing?
     :returns: A parsed dictionary of snvs to be processed.
-    :rtype: collections.Counter
+    :rtype: tuple(collections.Counter, collections.Counter)
     """
     if out_vcf:
         assert out_vcf.mode == 'w', 'Output vcf file is not open for writing'
-    logging.info('Reading in SNVs')
+    logging.info('Reading in Mutations from %s', snpeff_file.name)
     indexes = {'CHROM': 0,
                'POS': 1,
                'REF': 3,
@@ -292,7 +130,7 @@ def read_snvs(snpeff_file, rna_file=None, out_vcf=None, reject_threshold=None,
     # Set up the Manager, and the shared dict and queue
     manager = Manager()
     vcf_queue = manager.Queue()
-    snvs = manager.dict()
+    mutations = manager.dict()
     # Read in the vcf header and identify the columns in the file
     for line in snpeff_file:
         if line.startswith('#'):
@@ -314,6 +152,8 @@ def read_snvs(snpeff_file, rna_file=None, out_vcf=None, reject_threshold=None,
                     print('##INFO=<ID=coverage,Number=1,Type=String,Description=Reads supporting '
                           'the decision (Covering_RNA,Covering_DNA/Spanning_RNA,Spanning_DNA).',
                           file=out_vcf)
+                    print('##INFO=<ID=vaf,Number=1,Type=String,Description=The >Q30 variant '
+                          'allele frequency for the mutation in the RNA-Seq bam.', file=out_vcf)
                     write_to_vcf(indexes, out_vcf, header=True)
             elif rna_file or dna_file:
                 print(line, end='', file=out_vcf)
@@ -329,8 +169,11 @@ def read_snvs(snpeff_file, rna_file=None, out_vcf=None, reject_threshold=None,
     # Start the workers
     logging.info('Starting %s workers for vcf parsing.' % processes)
     pool = Pool(processes=processes)
-    parse_vcf_line_partial = partial(parse_vcf_line, queue=vcf_queue, indexes=indexes,
-                                     out_snvs=snvs, rna_file=rna_file,
+    parse_vcf_line_partial = partial(parse_vcf_line,
+                                     queue=vcf_queue,
+                                     indexes=indexes,
+                                     out_calls=mutations,
+                                     rna_file=rna_file,
                                      reject_threshold=reject_threshold,
                                      rna_min_alt_freq=rna_min_alt_freq,
                                      dna_file=dna_file,
@@ -358,34 +201,75 @@ def read_snvs(snpeff_file, rna_file=None, out_vcf=None, reject_threshold=None,
                 for pos in sorted(chrom_lines[chrom].keys()):
                     print(chrom_lines[chrom][pos], end='', file=out_vcf)
     for vcf in worker_vcfs:
-        # Delete the temp vcfs now that we're done with them.40
+        # Delete the temp vcfs now that we're done with them.
         os.remove(worker_vcfs[vcf])
 
     # Merge the dict structure into a dict of dicts
-    out_snvs = collections.defaultdict(dict)
+    out_muts = collections.defaultdict(dict)
     non_syn_seen = False
 
-    for transcript, mut, tlen in snvs.keys():
-        out_snvs[transcript][mut] = snvs[(transcript, mut, tlen)]
-        if not non_syn_seen and mut[0] != mut[-1] and mut[-1] != '*':
+    for transcript, mut, tlen in mutations.keys():
+        out_muts[transcript][mut] = mutations[(transcript, mut, tlen)]
+        if (not non_syn_seen and (mut[0] != mut[-1] and mut[-1] != '*')):
             # If we haven't seen a non_synonymous mutation, and this is non synonymous, update the
             # flag
             non_syn_seen = True
         # probably overkill
-        if 'len' in out_snvs[transcript]:
-            assert out_snvs[transcript]['len'] == int(tlen)
+        if 'len' in out_muts[transcript]:
+            assert out_muts[transcript]['len'] == int(tlen)
         else:
-            out_snvs[transcript]['len'] = int(tlen)
+            out_muts[transcript]['len'] = int(tlen)
 
-    if not (out_snvs and non_syn_seen):
+    if not (out_muts and non_syn_seen):
         logging.error('Input snpeffed mutations file was empty or had no actionable mutations.')
         raise RuntimeError('Input snpeffed mutations file was empty or had no actionable '
                            'mutations.')
 
-    return dict(out_snvs)
+    return dict(out_muts)
 
 
-def parse_vcf_line(worker_id, queue, indexes, out_snvs, rna_file=None, reject_threshold=None,
+def get_ref_pos_alt_aa(aa_change):
+    """
+    Determine the reference AA(s), the position in the protein, and the alternate AA(s) for a given
+    mutation in the form A123B
+
+    :param aa_change: A String describing a mutation in protein space
+    :return: reference AA(s), position, Alternamte AA(s)
+    :rtype: tuple(str, int, str)
+    """
+    # We expect the mutation to be 3-parts, non-numeric, numeric, non-numeric or NA
+    expected_isdigit = False
+    parts = ['']
+    for char in aa_change:
+        if char.isdigit() is expected_isdigit:
+            parts[-1] += char
+        else:
+            parts.append(char)
+            expected_isdigit = not expected_isdigit
+    parts[1] = int(parts[1])
+    if len(parts) == 2:
+        parts.append('')
+    return parts
+
+
+def get_codon_aa_change(codon_change):
+    """
+    For a given codon change E.g. aAt/aGt, return the changed base ([A,G] in teh example).
+    :param str codon_change: Thecodon change
+    :return: The modified ref and alt
+    :rtype: tuple
+    """
+    ref, alt = codon_change.split('/')
+    for i in range(3):
+        # range(3) is ok because this will only happen with MAV
+        if ref[i] == alt[i]:
+            continue
+        else:
+            return ref[i], alt[i]
+    assert False
+
+
+def parse_vcf_line(worker_id, queue, indexes, out_calls, rna_file=None, reject_threshold=None,
                    rna_min_alt_freq=None, dna_file=None, oxog_min_alt_freq=None):
     """
     Parse one mutation-containing line in the input vcf.
@@ -394,8 +278,8 @@ def parse_vcf_line(worker_id, queue, indexes, out_snvs, rna_file=None, reject_th
     :param multiprocessing.Manager.Queue queue: A queue that will supply a line of the vcf as every
            item
     :param dict indexes: A dict indicating the fields in the vcf line.
-    :param multiprocessing.Manager.dict out_snvs: The shared output vcf that will contain the output
-           calls.
+    :param multiprocessing.Manager.dict out_calls: The shared output vcf that will contain the
+           output calls.
     :param str rna_file: The path to the RNA-seq file. Can be None suggesting that expression
            filtering should not be carried out.
     :param int reject_threshold: The read coverage above which we reject a no-ALT-coverage event
@@ -407,7 +291,6 @@ def parse_vcf_line(worker_id, queue, indexes, out_snvs, rna_file=None, reject_th
            being oxoG artifacts.
     """
     logging.info('VCF parsing worker %s is up and running.' % worker_id)
-
     with open('.worker_%s.vcf' % worker_id, 'w') as out_vcf:
         while True:
             line = queue.get(timeout=30)
@@ -415,47 +298,72 @@ def parse_vcf_line(worker_id, queue, indexes, out_snvs, rna_file=None, reject_th
                 break
             line = line.strip().split('\t')
             line = {x: line[y] for x, y in indexes.items()}
+
+            alt_alleles = line['ALT'].split(',')
             changes = line['INFO'].split(';')[-1]
             if rna_file or dna_file:
                 # NOTE: vcf snvs are 1-based and not 0-based!
                 line['POS'] = int(line['POS']) - 1
                 if changes.startswith('EFF'):
-                    decision = reject_mutation(line, rna_file, reject_threshold, rna_min_alt_freq,
-                                               dna_file, oxog_min_alt_freq)
+                    decisions = reject_mutation(line, rna_file, reject_threshold, rna_min_alt_freq,
+                                                dna_file, oxog_min_alt_freq)
                 else:
                     logging.warning('Mutation at position %s:%s corresponds to a non-exonic '
                                     'region. Rejecting.', line['CHROM'], line['POS'] + 1)
-                    decision = reject_decision(reject=True, reason='NonExonic', coverage='NA')
+                    decisions = (reject_decision(reject=True, reason='NonExonic', coverage='NA',
+                                                 vaf='0.0'),)
                 # Print the line to the output vcf
-                line['INFO'] = ';'.join([line['INFO'], 'reason=' + decision.reason,
-                                         'coverage=' + str(decision.coverage)])
-                line['FILTER'] = 'REJECT' if decision.reject else 'PASS'
+                line['INFO'] = ';'.join([line['INFO'],
+                                         'reason=' + ','.join(d.reason for d in decisions),
+                                         'coverage=' + str(decisions[0].coverage),
+                                         'VAF=' + ','.join(str(d.vaf) for d in decisions)])
+                line['FILTER'] = 'REJECT' if all(d.reject for d in decisions) else 'PASS'
                 # Temporarily change back to 1-based for printing the vcf record
                 line['POS'] += 1
                 write_to_vcf(line, out_vcf)
                 line['POS'] -= 1
-                # Act on the decision
-                if decision.reject:
+                # If all ALT alleles were rejected, we can skip to the next call
+                if all(d.reject for d in decisions):
                     continue
-
+            else:
+                decisions = tuple([reject_decision(False, None, None, None) for _ in alt_alleles])
             changes = re.sub('EFF=', '', changes)
             changes = [x for x in changes.split(',')
-                       if x.startswith(('NON_SYNONYMOUS_CODING', 'SYNONYMOUS_CODING',
-                                        'STOP_GAINED')) and 'protein_coding' in x]
-            for i in range(0, len(changes)):
-                temp = changes[i].split('|')
-                if temp[3][-1].isdigit():
-                    temp[3] += temp[3][0]
-                if not (temp[3][0].isalpha() and temp[3][-1].isalpha()):
-                    if temp[3][-1] != '*':
+                       if x.startswith((
+                            'NON_SYNONYMOUS_CODING', 'SYNONYMOUS_CODING', 'STOP_GAINED',  # SNVs
+                            )) and 'protein_coding' in x]
+
+            for di, decision in enumerate(decisions):
+                if decision.reject:
+                    # happens if one of the ALT alleles was rejected but the other wasn't
+                    continue
+                for i in range(0, len(changes)):
+                    temp = changes[i].split('|')
+                    # MAVs will have a mix of both ALTs in the EFF line so we need to ensure
+                    # this change corresponds to the current ALT
+                    codon_aa_change = get_codon_aa_change(temp[2])
+                    if codon_aa_change not in [(line['REF'], alt_alleles[di]),
+                                               (line['REF'].translate(trans),
+                                                alt_alleles[di].translate(trans))]:
                         continue
-                out_snvs[(temp[8], temp[3], temp[4])] = {
-                    'AA': {'REF': temp[3][0],
-                           # The if-else makes synonymous mutants looks like the others.
-                           'ALT': temp[3][-1],
-                           'change': temp[2]},
-                    'NUC': {'REF': line['REF'], 'ALT': line['ALT'],
-                            'POS': line['POS'], 'CHROM': line['CHROM']}}
+                    ref_aa, pos, alt_aa = get_ref_pos_alt_aa(temp[3])
+                    if not alt_aa:
+                        # Synonymous change
+                        alt_aa = ref_aa
+                    if alt_aa.endswith('?'):
+                        assert ref_aa == '?' and temp[-1] == 'WARNING_TRANSCRIPT_INCOMPLETE)', \
+                            '? seen in an SNV for the ALT AA'
+
+                    out_calls[(temp[8], temp[3], temp[4])] = {
+                        'AA': {'REF': ref_aa,
+                               'ALT': alt_aa,
+                               'change': temp[2],
+                               'POS': pos},
+                        'NUC': {'REF': line['REF'],
+                                'ALT': alt_alleles[di],
+                                'POS': line['POS'],
+                                'CHROM': line['CHROM']},
+                    }
     logging.info('VCF parsing worker %s received signal to go down.' % worker_id)
 
 
@@ -635,7 +543,7 @@ def get_mutation_groups(p_snvs, peplen, pfasta_name, rna_bam=None):
         return out_groups
 
 
-def merge_adjacent_muts(snvs, muts):
+def merge_adjacent_snvs(snvs, muts):
     """
     Given 2-3 mutations that modify the same codon, find the actual modified AA.
 
@@ -645,12 +553,12 @@ def merge_adjacent_muts(snvs, muts):
     :rtype: tuple
 
     >>> snvs = {'R148R': {'AA': {'change': 'Cgg/Agg'}}, 'R148Q': {'AA': {'change': 'cGg/cAg'}}}
-    >>> merge_adjacent_muts(snvs, ['R148R', 'R148Q'])
+    >>> merge_adjacent_snvs(snvs, ['R148R', 'R148Q'])
     'R148K
     >>> snvs = {'A123B': {'NUC': {'ALT': 'C'}}, \
                 'C123D': {'NUC': {'ALT': 'A'}}, \
                 'E123F': {'NUC': {'ALT': 'T'}}}
-    >>> merge_adjacent_muts(snvs, ['A123B', 'C123D','E123F'])
+    >>> merge_adjacent_snvs(snvs, ['A123B', 'C123D','E123F'])
     'A123H'
     """
     from fusion import genetic_code
@@ -674,55 +582,71 @@ def correct_for_same_codon(snvs, mut_group):
     rna filter in Transgene also handles them independently. This method corrects the calls if they
     are found to be on the same allele.
 
-    :param dict snvs: The collection of snvs in the protein
-    :param tuple mut_group: The group of mutations found to be coexpressed
+    :param dict(str, dict(str, str|int)) snvs: The collection of snvs in the protein
+    :param tuple(stri) mut_group: The group of mutations found to be coexpressed
     :return: The corrected tuple of mutations in the group
-    :rtype: tuple
+    :rtype: tuple(str)
 
-    >>> correct_for_same_codon({}, ('A123B',))
+    >>> snvs = {'A123B': {'AA': {'change': 'Xxx/Yxx', 'POS': 123}}, \
+                'C124D': {'AA': {'change': 'Zzz/Azz', 'POS': 124}}}
+    >>> correct_for_same_codon(snvs, ('A123B',))
     ('A123B',)
-    >>> correct_for_same_codon({}, ('A123B', 'C124D'))
+    >>> correct_for_same_codon(snvs, ('A123B', 'C124D'))
     ('A123B', 'C124D')
-    >>> snvs = {'R148R': {'AA': {'change': 'Cgg/Agg'}}, \
-                'R148Q': {'AA': {'change': 'cGg/cAg'}}, \
-                'R149X': {'AA': {'change': 'xXx/yYy'}}}
+    >>> snvs = {'R148R': {'AA': {'change': 'Cgg/Agg', 'POS': 148}, 'NUC': {'POS': 12345}}, \
+                'R148Q': {'AA': {'change': 'cGg/cAg', 'POS': 148}, 'NUC': {'POS': 12346}}, \
+                'R149X': {'AA': {'change': 'xXx/xYx', 'POS': 149}, 'NUC': {'POS': 12349}}}
     >>> correct_for_same_codon(snvs, ('R148R', 'R148Q', 'R149X'))
     ('R148K', 'R149X')
+    >>> snvs = {'R148R': {'AA': {'change': 'Cgg/Agg', 'POS': 148}, 'NUC': {'POS': 12345}}, \
+                'R148W': {'AA': {'change': 'Cgg/Tgg', 'POS': 148}, 'NUC': {'POS': 12345}}, \
+                'R149X': {'AA': {'change': 'xXx/xYx', 'POS': 149}, 'NUC': {'POS': 12349}}}
+    >>> correct_for_same_codon(snvs, ('R148R', 'R148W', 'R149X'))
+    ()
     """
-    if len(mut_group) == 1 or len(mut_group) == len({x[1:-1] for x in mut_group}):
+    if len(mut_group) == 1 or len(mut_group) == len({snvs[x]['AA']['POS'] for x in mut_group}):
         # If there is only 1 mutation or if the positions are unique
         return mut_group
     else:
         out_list = []
-        positions = {x[1:-1] for x in mut_group}  # These will be sorted strings by default.
+        # A  set of positions in this group
+        positions = {snvs[x]['AA']['POS'] for x in mut_group}
         # These groups are going to be small so we aren't losing much by brute-forcing this.
-        for pos in positions:
-            muts = [mut for mut in mut_group if pos in mut]
+        for pos in sorted(positions):
+            muts = [mut for mut in mut_group if str(pos) in mut]
             if len(muts) == 1:
                 out_list.extend(muts)
+            elif len({snvs[mut]['NUC']['POS'] for mut in muts}) == 1:
+                # MAVs affect the same codon AND the same nucleotide. They CANNOT be in the same
+                # group
+                logging.info('Skipping a group (%s) containing a Multi-Allelic Variant.', muts)
+                return ()
             else:
                 logging.info('Identified co-expressed mutations (%s)that affect the same '
                              'codon/AA.  Merging.', muts)
-                merged_group = merge_adjacent_muts(snvs, muts)
+                merged_group = merge_adjacent_snvs(snvs, muts)
                 out_list.append(merged_group)
                 logging.info('Merged (%s) into %s.', muts, merged_group)
         return tuple(out_list)
 
 
-def insert_snvs(chroms, snvs, tumfile, normfile, peplen, rna_bam=None):
+def insert_mutations(protein_fa, mutations, tumfile, normfile, peplen, rna_bam=None, chroms=None):
     """
-    This module uses the snv data contained in snvs and inserts them into the genome contained in
-    chroms.
-    :param dict chroms: Contains the peptides in the form of dicts where keys hold the protein name
-    and the values holds the sequence.
-    :param dict snvs: Contains the snvs parsed from teh input SnpEFF file.
+    This module uses the mutation data contained in `mutations` and inserts them into the
+    genome contained in `chroms`.
+
+    :param dict protein_fa: Contains the peptides in the form of a dict where keys hold the protein
+           name and the values holds the sequence.
+    :param dict mutations: Contains the snvs parsed from teh input SnpEFF file.
     :param file tumfile: The file to write tumor output to.
     :param file normfile: The file to write normal output to.
     :param int peplen: Length of peptides which will be generated from the output file.
     :param str rna_bam: The path to the RNA-Seq bam file
+    :param dict chroms: Contains the chromosomal dna int he form of a dict where keys hold the
+           chromosome name and the values holds the sequence.
     """
-    logging.info('Inserting SNVs into IARs')
-    for pept in snvs.keys():
+    logging.info('Inserting Mutations into IARs')
+    for pept in mutations.keys():
         # First, grab the positions of all mutations in the peptide.  If there are multiple
         # mutations, then for each mutation, list the other mutations that are within peplen
         # positions of it IN THE POSITIVE DIRECTION.  The mutations are potentially co-expressed on
@@ -747,51 +671,52 @@ def insert_snvs(chroms, snvs, tumfile, normfile, peplen, rna_bam=None):
         # the mutation_groups list object. Each group in in the list is a list of all mutations in
         # the group.  If there are no neighboring mutations, the group contains only the mutation
         # itself.
-        pfasta_name = [x for x in chroms.keys() if ''.join([pept, '_']) in x][0]
+        pfasta_name = [x for x in protein_fa.keys() if ''.join([pept, '_']) in x][0]
         # We have all the mutations and the protein sequence here. Do a sanity check on the results.
-        protein = chroms[pfasta_name]
-        if 'len' in snvs[pept]:
+        protein = protein_fa[pfasta_name]
+        if 'len' in mutations[pept]:
             # If 'len' is not in this dict, it means a previous process has already cleaned up the
             # dict. This will need to change if this module is multithreaded.
-            expected_tlen = snvs[pept].pop('len')
-            for mutation in snvs[pept].keys():
+            expected_tlen = mutations[pept].pop('len')
+            for mutation in mutations[pept].keys():
                 mut_pos = int(mutation[1:-1])
-                if protein[mut_pos - 1] != snvs[pept][mutation]['AA']['REF']:
-                    if snvs[pept][mutation]['AA']['REF'] == snvs[pept][mutation]['AA']['ALT']:
+                if protein[mut_pos - 1] != mutations[pept][mutation]['AA']['REF']:
+                    if mutations[pept][mutation]['AA']['REF'] == mutations[pept][mutation]['AA']['ALT']:
                         # Let synonymous mutations pass through
                         continue
                     logging.warning('%s seen at position %s in %s.... %s expected.',
-                                    chroms[pfasta_name][mut_pos - 1], mut_pos, pept,
-                                    snvs[pept][mutation]['AA']['REF'])
-                    if len(chroms[pfasta_name]) - expected_tlen in (1, 2):
+                                    protein_fa[pfasta_name][mut_pos - 1], mut_pos, pept,
+                                    mutations[pept][mutation]['AA']['REF'])
+                    if len(protein_fa[pfasta_name]) - expected_tlen in (1, 2):
                         # This is a case seen often with SNPEff where the n+1 position will have
                         # the mutation.  Check the n+1 residue
-                        if protein[mut_pos] == snvs[pept][mutation]['AA']['REF']:
+                        if protein[mut_pos] == mutations[pept][mutation]['AA']['REF']:
                             logging.info('Mutation at position %s in %s detected to exist at '
                                          'position %s.', mut_pos, pept, mut_pos + 1)
-                            new_mutation = ''.join([snvs[pept][mutation]['AA']['REF'],
+                            new_mutation = ''.join([mutations[pept][mutation]['AA']['REF'],
                                                     str(mut_pos + 1),
-                                                    snvs[pept][mutation]['AA']['ALT']])
-                            snvs[pept][new_mutation] = snvs[pept][mutation]
-                            snvs[pept].pop(mutation)
+                                                    mutations[pept][mutation]['AA']['ALT']])
+                            mutations[pept][new_mutation] = mutations[pept][mutation]
+                            mutations[pept].pop(mutation)
                     else:
                         logging.warning('Cannot handle mutation at position %s in %s. '
                                         'Disregarding.', mut_pos, pept)
-                        snvs[pept].pop(mutation)
-        if not snvs[pept]:
+                        mutations[pept].pop(mutation)
+        if not mutations[pept]:
             continue
-        all_mutation_groups = get_mutation_groups(snvs[pept], peplen, pfasta_name, rna_bam)
+        all_mutation_groups = get_mutation_groups(mutations[pept], peplen, pfasta_name, rna_bam)
+
         for mut_group in all_mutation_groups:
             for group_muts in mut_group:
-                # If the first mutation in the group is a stop gain, it does not yield any
-                # neo-epitopes.  This also handles the possibility of the ONLY mutation being a
-                # stop gain
-                if group_muts[0][-1] == '*':
+                group_muts = correct_for_same_codon(mutations[pept], group_muts)
+                # After correcting, if there is only ONE mutation and it is a stop gain, disregard
+                # this call
+                if len(group_muts) == 1 and group_muts[0][-1] == '*':
                     continue
-                group_muts = correct_for_same_codon(snvs[pept], group_muts)
                 group_muts = tuple([x for x in group_muts if x[0] != x[-1]])
                 if len(group_muts) == 0:
-                    # If the group only consisted of one synonymous mutation
+                    # If the group only consisted of one synonymous mutation, or was rejected for
+                    # having an MAV.
                     continue
                 out_pept = {'pept_name': [pfasta_name],
                             'tum_seq': [],
@@ -861,7 +786,7 @@ def write_pepts_to_file(peptide_info, tumfile, normfile, peplen):
 
     if len(tum_peptide_seq) < peplen:
         prefix = 'Truncated ' if truncated else ''
-        logging.warning((prefix + 'IAR %s is less than %s residues (%s).'), peplen, peptide_name,
+        logging.warning((prefix + 'IAR %s is less than %s residues (%s).'), peptide_name, peplen,
                         tum_peptide_seq)
     else:
         print('>', peptide_name, sep='', file=tumfile)
@@ -1006,28 +931,26 @@ def main(params):
         proteome_data = get_proteome_data(params.peptide_file)
         params.peptide_file.close()
 
-    # Read in snpeff file
-    # The naming convention of the variables and functions comes from a previous functionality
+    # Read in snpeffed vcf files
+    mutations = None
     if params.snpeff_file:
         if params.rna_file or params.dna_file:
             out_vcf = open('_'.join([params.prefix, 'transgened.vcf']), 'w')
         else:
             out_vcf = None
         try:
-            snvs = read_snvs(snpeff_file=params.snpeff_file,
-                             rna_file=params.rna_file,
-                             out_vcf=out_vcf,
-                             reject_threshold=params.reject_threshold,
-                             rna_min_alt_freq=params.rna_min_alt_freq,
-                             dna_file=params.dna_file,
-                             oxog_min_alt_freq=params.oxog_min_alt_freq,
-                             processes=params.cores)
+            mutations = read_snpeffed_vcf(snpeff_file=params.snpeff_file,
+                                          rna_file=params.rna_file,
+                                          out_vcf=out_vcf,
+                                          reject_threshold=params.reject_threshold,
+                                          rna_min_alt_freq=params.rna_min_alt_freq,
+                                          dna_file=params.dna_file,
+                                          oxog_min_alt_freq=params.oxog_min_alt_freq,
+                                          processes=params.cores)
         finally:
             if params.rna_file or params.dna_file:
                 out_vcf.close()
             params.snpeff_file.close()
-    else:
-        snvs = None
 
     # Load data for generating fusion peptides
     if params.transcript_file:
@@ -1054,10 +977,12 @@ def main(params):
         os.close(outfile2)
 
         with open(tumfile_path, 'w') as tumfile, open(normfile_path, 'w') as normfile:
-            if proteome_data and snvs:
-                insert_snvs(proteome_data, snvs, tumfile, normfile, int(peplen), params.rna_file)
+            if proteome_data and mutations:
+                insert_mutations(proteome_data, mutations, tumfile, normfile, int(peplen),
+                                 params.rna_file)
             if transcriptome and gene_transcript_ids and fusions:
-                insert_fusions(transcriptome, fusions, gene_transcript_ids, int(peplen), tumfile, exons=exons)
+                insert_fusions(transcriptome, fusions, gene_transcript_ids, int(peplen), tumfile,
+                               exons=exons)
 
         if params.no_json_dumps:
             shutil.move(tumfile_path, '_'.join([params.prefix, 'tumor', peplen,
