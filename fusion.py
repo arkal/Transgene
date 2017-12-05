@@ -9,8 +9,7 @@ from cStringIO import StringIO
 
 import swalign
 
-from common import read_fasta, GTFRecord
-
+from common import read_fasta, GTFRecord, trans
 
 # Standard Genetic Code from NCBI
 amino = 'FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG'
@@ -59,7 +58,7 @@ def get_exons(genome_file, annotation_file):
     :return: GTFRecord exons
     :rtype: dict
     """
-    chroms ={}
+    chroms = {}
     exons = collections.defaultdict(list)
     for header, comment, seq in read_fasta(genome_file, 'ACGTN'):
         chroms[header] = seq
@@ -198,7 +197,8 @@ def align_filter(ref, query, mode, mismatches_per_kb=1):
 
         # Filter alignments that have more than the allowed number of mismatches per kilobase
         if num_mismatches > int( mismatches_per_kb * (qstop - qstart) ):
-            logging.debug("Mismatch filter: %d > %d" % (num_mismatches, int( mismatches_per_kb * (qstop - qstart) )))
+            logging.debug("Mismatch filter: %d > %d" % (num_mismatches,
+                                                        int(mismatches_per_kb * (qstop - qstart))))
             return
 
         # Filter alignments that do not include the donor breakpoint
@@ -233,12 +233,6 @@ def scan_frame(reference_start):
             return
 
     return in_frame_adjustment
-
-
-# Use translation table to complement sequences
-forward = 'ACGTN'
-reverse = 'TGCAN'
-trans = string.maketrans(forward, reverse)
 
 
 def get_donor_junction_exon(breakpoint, exons):

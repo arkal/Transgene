@@ -1,5 +1,13 @@
+import collections
 import re
 
+
+# A translation table use to complement string sequences
+import string
+
+forward = 'ACGTN'
+reverse = 'TGCAN'
+trans = string.maketrans(forward, reverse)
 
 def read_fasta(input_file, alphabet):
     """
@@ -163,3 +171,13 @@ class GTFRecord(object):
         except AttributeError:
             return False
 
+# A named tuple describing the result of running reject_mutation on a mutation.
+reject_decision = collections.namedtuple('reject_decision', (
+    # The decision on whether to reject the mutation or not
+    'reject',
+    # The reason for rejection, if decision == True
+    'reason',
+    # The number of reads at the position
+    'coverage',
+    # The variant allele frequency
+    'vaf'))

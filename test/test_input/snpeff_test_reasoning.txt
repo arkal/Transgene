@@ -19,8 +19,10 @@ These 3 will form 2 possible chains in the non-rna run, and one possible chain i
 chr6    31670394        .       C       T       .       PASS    ENST00000492084.1:G>D
 
 7. Chained mutations
+7a. Incidentally, , Also an MNP where only one of the two alleles is expressed in the RNA.
 chr6    31669898        .       A       G       .       PASS    ENST00000492084.1:L>P,ENST00000395952.3:Y>H
-chr6    31670934        .       C       T       .       PASS    ENST00000395952.3:S>N
+chr6    31670934        .       C       T,G       .       PASS    ENST00000395952.3:S>N/ENST00000395952.3:S>I
+
 
 8. This mutation is not expressed but it contains an "n+1 error in the position called by
 snpeff" and will come up in the non-rna run.

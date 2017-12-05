@@ -155,7 +155,9 @@ class TransgeneTest(unittest.TestCase):
                 'SLYSGELADGGYLSLSK',  # ENST00000440843.2:G51D
                 'PRLYKIYRGRDS',  # ENST00000395952.3:E19GXXXY17*
                 'TAVTAPHSNSWDTYYQP',  # ENST00000395952.3:S42N
+                'TAVTAPHSTSWDTYYQP',  # ENST00000395952.3:S42T
                 'HSSSWDTYHQPRALEKH',  # ENST00000395952.3:Y48H
+                'TAVTAPHSTSWDTYHQPRALEKH',  # ENST00000395952.3:S42TXXXXXY48H
                 'PWTVGKNELSQTVGEVF'  # ENST00000229729.10:F>L
             ])
             expected_peptides['10mer'].update([
@@ -164,7 +166,9 @@ class TransgeneTest(unittest.TestCase):
                 'ESLYSGELADGGYLSLSKV',  # ENST00000440843.2:G51D
                 'GPRLYKIYRGRDS',  # ENST00000395952.3:E19GXXXY17*
                 'PTAVTAPHSNSWDTYYQPR',  # ENST00000395952.3:S42N
+                'PTAVTAPHSTSWDTYYQPR',  # ENST00000395952.3:S42T
                 'PHSSSWDTYHQPRALEKHA',  # ENST00000395952.3:Y48H
+                'PTAVTAPHSTSWDTYHQPRALEKHA',  # ENST00000395952.3:S42TXXXXXY48H
                 'DPWTVGKNELSQTVGEVFY'  # ENST00000229729.10:F>L
             ])
             expected_peptides['15mer'].update([
@@ -173,7 +177,9 @@ class TransgeneTest(unittest.TestCase):
                 'LAWRPESLYSGELADGGYLSLSKVVPFSH',  # ENST00000440843.2:G51D
                 'LSCVLGPRLYKIYRGRDS',  # ENST00000395952.3:E19GXXXY17*
                 'SVPETPTAVTAPHSNSWDTYYQPRALEKH',  # ENST00000395952.3:S42N
+                'SVPETPTAVTAPHSTSWDTYYQPRALEKH',  # ENST00000395952.3:S42T
                 'TAVTAPHSSSWDTYHQPRALEKHADSILA',  # ENST00000395952.3:Y48H
+                'SVPETPTAVTAPHSTSWDTYHQPRALEKHADSILA',  # ENST00000395952.3:S4INXXXXXY48H
                 'SSCPEDPWTVGKNELSQTVGEVFYTKNRN'  # ENST00000229729.10:F>L
             ])
             if not test_with_dna_file:
@@ -230,6 +236,18 @@ class TransgeneTest(unittest.TestCase):
                     print('Transgene failed to predict some {}s: {}'.format(kmer, ','.join(
                         expected_peptides[kmer] - observed_seqs)))
                 raise RuntimeError
+
+    def test_get_ref_pos_alt_aa(self):
+        want = [('A123B', ['A', 123, 'B']),
+                ('A123', ['A', 123, '']),
+                ('ABC132BAT', ['ABC', 132, 'BAT']),
+                ('BCA132B?', ['BCA', 132, 'B?']),
+                ('B132*', ['B', 132, '*'])
+                ]
+        for string, parsed_string in want:
+            get = transgene.get_ref_pos_alt_aa(string)
+            self.assertListEqual(parsed_string, get)
+
 
     @staticmethod
     def _get_input_path(file_path):
