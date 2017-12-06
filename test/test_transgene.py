@@ -107,6 +107,9 @@ class TransgeneTest(unittest.TestCase):
                                                            'annotation.gtf')) if fusions else None
         params.genome_file = open(self._get_input_path('test_input/chr21.fa')) if fusions else None
 
+        params.filter_mt = params.filter_rg = params.filter_ig = params.filter_rt = True
+        params.rt_threshold = 100000
+
         params.cores = 3
         transgene.main(params)
         output = {'9mer': {'fasta': 'unit_test_tumor_9_mer_snpeffed.faa',

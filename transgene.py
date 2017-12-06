@@ -25,8 +25,9 @@ from multiprocessing import Manager, Pool
 from operator import itemgetter
 from tempfile import mkstemp
 
-from common import read_fasta, chrom_sort, reject_decision, trans
-from fusion import get_transcriptome_data, read_fusions, insert_fusions, get_exons
+from common import chrom_sort, get_exons, read_fasta, read_genes_from_gtf, reject_decision, trans, \
+    genetic_code
+from fusion import get_transcriptome_data, insert_fusions, read_fusions
 from snv import reject_snv
 
 
@@ -561,7 +562,6 @@ def merge_adjacent_snvs(snvs, muts):
     >>> merge_adjacent_snvs(snvs, ['A123B', 'C123D','E123F'])
     'A123H'
     """
-    from fusion import genetic_code
     if len(muts) == 3:
         return muts[0][:-1] + genetic_code[''.join([snvs[x]['NUC']['ALT'] for x in muts])]
     else:
@@ -933,6 +933,7 @@ def main(params):
 
     # Read in snpeffed vcf files
     mutations = None
+    genes_to_translate = set()
     if params.snpeff_file:
         if params.rna_file or params.dna_file:
             out_vcf = open('_'.join([params.prefix, 'transgened.vcf']), 'w')
@@ -959,15 +960,18 @@ def main(params):
         transcriptome, gene_transcript_ids = None, None
 
     # Load data from fusion file
+    fusions = exons = None
     if params.fusion_file:
-        fusions = read_fusions(params.fusion_file)
-    else:
-        fusions = None
-
-    if params.genome_file and params.annotation_file:
-        exons = get_exons(params.genome_file, params.annotation_file)
-    else:
-        exons = None
+        gene_annotations = read_genes_from_gtf(params.annotation_file)
+        out_bedpe = open('_'.join([params.prefix, 'transgened.bedpe']), 'w')
+        try:
+            fusions = read_fusions(params.fusion_file, gene_annotations, params.filter_mt,
+                                   params.filter_ig, params.filter_rg, params.filter_rt,
+                                   params.rt_threshold, out_bedpe)
+        finally:
+            out_bedpe.close()
+        genes_to_translate.update(sum([(record.hugo1, record.hugo2) for record in fusions], ()))
+        exons = get_exons(params.genome_file, params.annotation_file, genes_to_translate)
 
     for peplen in params.pep_lens.split(','):
         logging.info('Processing %s-mers', peplen)
@@ -1005,36 +1009,36 @@ def run_transgene():
     This will try to run transgene from system arguments
     """
     parser = argparse.ArgumentParser(description=main.__doc__)
-    parser.add_argument('--peptides', dest='peptide_file',
-                        type=argparse.FileType('r'),
+    # SNV related options
+    parser.add_argument('--peptides', dest='peptide_file', type=argparse.FileType('r'),
                         help='Path to GENCODE translation FASTA file')
-    parser.add_argument('--transcripts', dest='transcript_file',
-                        type=argparse.FileType('r'),
-                        help='Path to GENCODE transcript FASTA file')
-    parser.add_argument('--snpeff', dest='snpeff_file',
-                        type=argparse.FileType('r'),
+    parser.add_argument('--snpeff', dest='snpeff_file', type=argparse.FileType('r'),
                         help='Path to snpeff file')
-    parser.add_argument('--cores', dest='cores', type=int,
-                        help='Number of cores to use for the filtering step.', required=False,
-                        default=1)
-    parser.add_argument('--fusions', dest='fusion_file',
-                        help='Path to gene fusion file',
+
+    # Fusion related options
+    parser.add_argument('--fusions', dest='fusion_file', help='Path to gene fusion file',
                         type=argparse.FileType('r'))
+    parser.add_argument('--transcripts', dest='transcript_file', type=argparse.FileType('r'),
+                        help='Path to GENCODE transcript FASTA file. Required if calling fusions.')
     parser.add_argument('--genome', dest='genome_file',
-                        help='Path to reference genome file',
+                        help='Path to reference genome file, Required if calling fusions.',
                         type=argparse.FileType('r'))
     parser.add_argument('--annotation', dest='annotation_file',
-                        help='Path to gencode annotation file',
+                        help='Path to gencode annotation file. Required if calling fusions.',
                         type=argparse.FileType('r'))
-    parser.add_argument('--prefix', dest='prefix', type=str,
-                        help='Prefix for output file names', required=True)
-    parser.add_argument('--pep_lens', dest='pep_lens', type=str,
-                        help='Desired peptide lengths to process. '
-                             'The argument should be in the form of comma separated values.  '
-                             'E.g. 9,15', required=False, default='9,10,15')
-    parser.add_argument('--no_json_dumps', action='store_true',
-                        help='Do not educe peptide fasta record names in the output by dumping the '
-                             'mapping info into a .map json file.', required=False, default=False)
+    parser.add_argument('--filter_mt_fusions', dest='filter_mt', action='store_true',
+                        help='Filter fusions involving Mitochondrial genes.', required=False)
+    parser.add_argument('--filter_ig_pairs', dest='filter_ig', action='store_true',
+                        help='Filter fusions involving two immunoglobulin genes (IGXXX).',
+                        required=False)
+    parser.add_argument('--filter_rna_gene_fusions', dest='filter_rg', action='store_true',
+                        help='Filter fusions involving RNA genes (RP11-XXXX).', required=False)
+    parser.add_argument('--filter_readthroughs', dest='filter_rt', action='store_true',
+                        help='Filter transcriptional read-troughs.', required=False)
+    parser.add_argument('--readthrough_threshold', dest='rt_threshold', type=int,
+                        help='Genomic distance between candidates on the same strand below which a '
+                        'fusion will be considered a read-through.', default=500000, required=False)
+
     # RNA-Aware options
     parser.add_argument('--rna_file', dest='rna_file', help='The path to an RNA-seq bam file. If '
                         'provided, the vcf will be filtered for coding mutations only. The file '
@@ -1047,6 +1051,7 @@ def run_transgene():
     parser.add_argument('--min_rna_alt_freq', dest='rna_min_alt_freq', help='The ALT allele '
                         'frequency (as a fraction) in the RNA-Seq below which we will reject the '
                         'mutation.', type=float, required=False, default=0.1)
+
     # OxoG filtering options
     parser.add_argument('--filterOxoG', dest='filter_oxog', action='store_true', help='Filter the '
                         'calls for OxoG artifacts. This feature requires a tumor dna bam as input.',
@@ -1058,19 +1063,38 @@ def run_transgene():
                         'allele frequency (as a fraction) in the DNA-Seq below which we will flag'
                         'the mutation as being an OxoG variant.',
                         type=float, required=False, default=0.1)
+
+    # Logging
     parser.add_argument('--log_level', dest='log_level', help='The level of logging above which '
                         'messages should be printed.', required=False, choices={'DEBUG', 'INFO',
                                                                                 'WARNING', 'ERROR'},
                         default='INFO')
     parser.add_argument('--log_file', dest='logfile', help='A path to a logfile.', type=str,
                         required=False, default=None)
+
+    # Misc
+    parser.add_argument('--prefix', dest='prefix', type=str, help='Prefix for output file names.',
+                        required=True)
+    parser.add_argument('--pep_lens', dest='pep_lens', type=str, help='Desired peptide lengths to '
+                        'process. The argument should be in the form of comma separated values.  '
+                        'E.g. 9,15', required=False, default='9,10,15')
+    parser.add_argument('--no_json_dumps', action='store_true',
+                        help='Do not educe peptide fasta record names in the output by dumping the '
+                        'mapping info into a .map json file.', required=False, default=False)
+    parser.add_argument('--cores', dest='cores', type=int,
+                        help='Number of cores to use for the filtering step.', required=False,
+                        default=1)
     params = parser.parse_args()
 
     if params.snpeff_file and not params.peptide_file:
         raise ValueError('VCF file requires GENCODE translation FASTA file')
 
     if params.fusion_file and not params.transcript_file:
-        raise ValueError('Fusion file requires GENCODE transcripts FASTA file')
+        raise ValueError('Fusion calling requires GENCODE transcripts FASTA file')
+    if params.fusion_file and not params.annotation_file:
+        raise ValueError('Fusion calling requires GENCODE gtf annotation file')
+    if params.fusion_file and not params.genome_file:
+        raise ValueError('Fusion calling requires genomic fasta')
 
     if params.filter_oxog:
         if not params.dna_file:
