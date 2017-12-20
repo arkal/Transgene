@@ -351,7 +351,7 @@ def parse_vcf_line(worker_id, queue, indexes, out_calls, rna_file=None, reject_t
             else:
                 if len(line['REF']) == len(line['ALT']) or len(alt_alleles) != 1:
                     # Accept snvs only
-                    decisions = tuple([reject_decision(False, None, None, None)
+                    decisions = tuple([reject_decision(False, None, None, 0.0)
                                        for _ in alt_alleles])
                 else:
                     logging.warning('Rejecting INDEL %s:%s>%s.', line['POS'], line['REF'],
@@ -413,6 +413,7 @@ def parse_vcf_line(worker_id, queue, indexes, out_calls, rna_file=None, reject_t
                         'AA': {'REF': ref_aa,
                                'ALT': alt_aa,
                                'change': temp[2],
+                               'VAF': str(round(decision.vaf, 2)),
                                'POS': pos},
                         'NUC': {'REF': line['REF'],
                                 'ALT': alt_alleles[di],
@@ -845,7 +846,8 @@ def insert_mutations(protein_fa, mutations, tumfile, normfile, peplen, rna_bam=N
                     mut_pos = mutations[pept][group_mut]['AA']['POS']
                     ref = mutations[pept][group_mut]['AA']['REF']
                     alt = mutations[pept][group_mut]['AA']['ALT']
-                    out_pept['pept_name'].append(group_mut)
+                    out_pept['pept_name'].append(group_mut + '#' +
+                                                 mutations[pept][group_mut]['AA']['VAF'])
                     out_pept['tum_seq'].extend(protein[prev:mut_pos - 1])
                     out_pept['norm_seq'].extend(protein[prev:mut_pos - 1])
                     if '*' in alt:
