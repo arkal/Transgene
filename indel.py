@@ -87,8 +87,9 @@ def get_indel_alignment_info(rna_bam, vcf_record):
                 continue
             reads['covering'] += 1
             if read.alignment.seq[read.query_position] != vcf_record['REF'][0]:
-                logging.warning('read %s has %s at pos %s. expected %s', read.query_name,
-                                read.alignment.seq[read.query_position], vcf_record['REF'][0])
+                logging.warning('read %s has %s at pos %s. expected %s', read.alignment.query_name,
+                                read.alignment.seq[read.query_position], vcf_record['POS'] + 1,
+                                vcf_record['REF'][0])
                 continue
             if read.indel == 0:
                 # No indel on this read
@@ -133,11 +134,14 @@ def get_exon_start_pos(transcript_name, peptide_pos, exons, cds_starts):
     :rtype: int, bool
     """
     positive_strand = exons[transcript_name][0].strand == '+'
-    transcript_exons = [(exon.start, exon.end) for exon in exons[transcript_name][1:]]
     if positive_strand:
-        transcript_exons.insert(0, (cds_starts[transcript_name], exons[transcript_name][0].end))
+        transcript_exons = [(exon.start, exon.end) for exon in exons[transcript_name]
+                            if exon.end >= cds_starts[transcript_name]]
+        transcript_exons[0] = (cds_starts[transcript_name], transcript_exons[0][1])
     else:
-        transcript_exons.insert(0, (exons[transcript_name][0].start, cds_starts[transcript_name]+2))
+        transcript_exons = [(exon.start, exon.end) for exon in exons[transcript_name]
+                            if exon.start <= cds_starts[transcript_name]]
+        transcript_exons[0] = (transcript_exons[0][0], cds_starts[transcript_name]+2)
 
     frame = 0  # identifies the starting frame for the current exon
     total = 0  # tracks the total number of AAs accounted for at the end of the prev exon

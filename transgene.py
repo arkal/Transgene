@@ -18,6 +18,7 @@ import random
 import re
 import shutil
 import sys
+from copy import deepcopy
 from functools import partial
 from multiprocessing import Manager, Pool
 from operator import itemgetter
@@ -699,8 +700,13 @@ def correct_for_same_codon(snvs, mut_group):
     >>> snvs = {'R148R': {'AA': {'change': 'Cgg/Agg', 'POS': 148}, 'NUC': {'POS': 12345}}, \
                 'R148Q': {'AA': {'change': 'cGg/cAg', 'POS': 148}, 'NUC': {'POS': 12346}}, \
                 'R149X': {'AA': {'change': 'xXx/xYx', 'POS': 149}, 'NUC': {'POS': 12349}}}
-    >>> correct_for_same_codon(snvs, ('R148R', 'R148Q', 'R149X'))
+    >>> x = correct_for_same_codon(snvs, ('R148R', 'R148Q', 'R149X'))
+    >>> x
     ('R148K', 'R149X')
+    >>> 'R148K' in snvs
+    True
+    >>> snvs['R148K']['AA']['POS'] == 148
+    True
     >>> snvs = {'R148R': {'AA': {'change': 'Cgg/Agg', 'POS': 148}, 'NUC': {'POS': 12345}}, \
                 'R148W': {'AA': {'change': 'Cgg/Tgg', 'POS': 148}, 'NUC': {'POS': 12345}}, \
                 'R149X': {'AA': {'change': 'xXx/xYx', 'POS': 149}, 'NUC': {'POS': 12349}}}
@@ -730,6 +736,12 @@ def correct_for_same_codon(snvs, mut_group):
                 merged_group = merge_adjacent_snvs(snvs, muts)
                 out_list.append(merged_group)
                 logging.info('Merged (%s) into %s.', muts, merged_group)
+                # Now add this to the mutations dict
+                snvs[merged_group] = {'AA': {'REF': merged_group[0],
+                                             'ALT': merged_group[1],
+                                             'POS': pos,
+                                             'VAF': min([snvs[x]['AA']['VAF'] for x in mut_group])},
+                                      'indel': False}
         return tuple(out_list)
 
 
@@ -820,18 +832,20 @@ def insert_mutations(protein_fa, mutations, tumfile, normfile, peplen, rna_bam=N
                         mutations[pept].pop(mutation)
         if not mutations[pept]:
             continue
+
+        peptide_muts = deepcopy(mutations)
         all_mutation_groups = get_mutation_groups(mutations[pept], peplen, pfasta_name, rna_bam)
 
         for mut_group in all_mutation_groups:
             for group_muts in mut_group:
-                group_muts = correct_for_same_codon(mutations[pept], group_muts)
+                group_muts = correct_for_same_codon(peptide_muts[pept], group_muts)
                 # After correcting, if there is only ONE mutation and it is a stop gain, disregard
                 # this call
                 if len(group_muts) == 1 and group_muts[0][-1] == '*':
                     continue
-                group_muts = tuple([
-                    x for x in group_muts
-                    if mutations[pept][x]['AA']['REF'] != mutations[pept][x]['AA']['ALT']])
+                group_muts = tuple([x for x in group_muts
+                                    if peptide_muts[pept][x]['AA']['REF'] !=
+                                    peptide_muts[pept][x]['AA']['ALT']])
                 if len(group_muts) == 0:
                     # If the group only consisted of one synonymous mutation, or was rejected for
                     # having a MAV.
@@ -840,14 +854,14 @@ def insert_mutations(protein_fa, mutations, tumfile, normfile, peplen, rna_bam=N
                             'tum_seq': [],
                             'norm_seq': []
                             }
-                mut_pos = mutations[pept][group_muts[0]]['AA']['POS']
+                mut_pos = peptide_muts[pept][group_muts[0]]['AA']['POS']
                 prev = max(mut_pos - peplen, 0)  # First possible AA in the IAR
                 for group_mut in group_muts:
-                    mut_pos = mutations[pept][group_mut]['AA']['POS']
-                    ref = mutations[pept][group_mut]['AA']['REF']
-                    alt = mutations[pept][group_mut]['AA']['ALT']
+                    mut_pos = peptide_muts[pept][group_mut]['AA']['POS']
+                    ref = peptide_muts[pept][group_mut]['AA']['REF']
+                    alt = peptide_muts[pept][group_mut]['AA']['ALT']
                     out_pept['pept_name'].append(group_mut + '#' +
-                                                 mutations[pept][group_mut]['AA']['VAF'])
+                                                 peptide_muts[pept][group_mut]['AA']['VAF'])
                     out_pept['tum_seq'].extend(protein[prev:mut_pos - 1])
                     out_pept['norm_seq'].extend(protein[prev:mut_pos - 1])
                     if '*' in alt:
@@ -856,24 +870,24 @@ def insert_mutations(protein_fa, mutations, tumfile, normfile, peplen, rna_bam=N
                         out_pept['tum_seq'].append(alt[:star_pos])
                         prev = None
                         break
-                    elif not mutations[pept][group_mut]['indel']:
+                    elif not peptide_muts[pept][group_mut]['indel']:
                         # SNV. Easy to handle
                         out_pept['tum_seq'].append(alt)
                         out_pept['norm_seq'].append(ref)
                         prev = mut_pos
                     else:
                         # Indels
-                        if 'frame_shift' not in mutations[pept][group_mut]['indel']:
+                        if 'frame_shift' not in peptide_muts[pept][group_mut]['indel']:
                             # Full codon insertion or insertion with codon change, or full codon
                             # deletion.  We assume none of these events affect splicing.
                             out_pept['tum_seq'].extend(alt)
-                            out_pept['norm_seq'].extend(protein[mut_pos-1:mut_pos-1+len(ref)])
+                            out_pept['norm_seq'].extend(protein[mut_pos - 1:mut_pos - 1 + len(ref)])
                             prev = mut_pos + len(ref) - 1
                         else:
                             # Frame shift mutation.
                             group_mut_pos = group_muts.index(group_mut)
                             aa_seq = get_genomic_seq(pept, group_muts[group_mut_pos:],
-                                                     mutations[pept], chroms, exons, cds_starts,
+                                                     peptide_muts[pept], chroms, exons, cds_starts,
                                                      extend_length)
                             out_pept['tum_seq'].append(aa_seq)
                             out_pept['norm_seq'].append('#')  # Terminate normal strand
@@ -883,7 +897,7 @@ def insert_mutations(protein_fa, mutations, tumfile, normfile, peplen, rna_bam=N
                 if prev is not None:
                     out_pept['tum_seq'].extend(protein[prev:prev + peplen - 1])
                     out_pept['norm_seq'].extend(protein[prev:prev + peplen - 1])
-                    if mutations[pept]['has_indel']:
+                    if peptide_muts[pept]['has_indel']:
                         # Handle left side of the IAR
                         fm = first_mismatch(out_pept['tum_seq'], out_pept['norm_seq'])
                         if fm >= peplen:
