@@ -16,17 +16,17 @@ chr6    31670475        .       G       T       .       PASS    ENST00000440843.
 
 These 3 will form 2 possible chains in the non-rna run, and one possible chain in the rna one.
 6. Mutation in a non-expressed exon (splice variant)
-chr6    31670394        .       C       T       .       PASS    ENST00000492084.1:G>D
+chr6    31670394        .       C       T       .       PASS    ENST00000492084.1:G>D  # This is NMD in SNPEff 4.0+
 
 7. Chained mutations
 7a. Incidentally, , Also an MNP where only one of the two alleles is expressed in the RNA.
-chr6    31669898        .       A       G       .       PASS    ENST00000492084.1:L>P,ENST00000395952.3:Y>H
+chr6    31669898        .       A       G       .       PASS    ENST00000492084.1:L>P,ENST00000395952.3:Y>H   # This is NMD in SNPEff 4.0+
 chr6    31670934        .       C       T,G       .       PASS    ENST00000395952.3:S>N/ENST00000395952.3:S>I
 
 
 8. This mutation is not expressed but it contains an "n+1 error in the position called by
 snpeff" and will come up in the non-rna run.
-chr6    31842572        .       A       G       .       PASS    ENST00000229729.10:F>L
+chr6    31842572        .       A       G       .       PASS    ENST00000229729.6:F>L
 
 9. This mutation has 2 REF read support in the RNA with many spanning reads but is an OxoG mutant in the exome (All Forward read)
 chr6    31939912        .       C       A       .       PASS    ENST00000375331.2:Q>K

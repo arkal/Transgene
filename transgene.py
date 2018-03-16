@@ -15,9 +15,10 @@ import json
 import logging
 import os
 import random
-import re
 import shutil
+import string
 import sys
+import time
 from copy import deepcopy
 from functools import partial
 from multiprocessing import Manager, Pool
@@ -25,10 +26,22 @@ from operator import itemgetter
 from tempfile import mkstemp
 
 import pysam
-from common import chrom_sort, get_exons, read_fasta, read_genes_from_gtf, reject_decision, trans, \
-    genetic_code, translate, first_mismatch, file_type
+from common import (chrom_sort,
+                    first_mismatch,
+                    file_type,
+                    genetic_code,
+                    get_exons,
+                    get_snpeff_3_6_changes,
+                    get_snpeff_4_0_changes,
+                    get_snpeff_4_x_changes,
+                    get_vep_changes,
+                    read_fasta,
+                    read_genes_from_gtf,
+                    reject_decision,
+                    trans,
+                    translate)
 from fusion import get_transcriptome_data, insert_fusions, read_fusions
-from indel import reject_indel, get_exon_start_pos
+from indel import get_codon, get_exon_start_pos, reject_indel
 from snv import reject_snv
 
 
@@ -83,7 +96,6 @@ def reject_mutation(call, rna_bam=None, reject_threshold=None, rna_min_alt_freq=
                                        vaf=0.0),
 
 
-
 def write_to_vcf(data, out_vcf, header=False):
     """
     Write results to a vcf file
@@ -103,9 +115,9 @@ def write_to_vcf(data, out_vcf, header=False):
               file=out_vcf)
 
 
-def read_snpeffed_vcf(snpeff_file, rna_file=None, out_vcf=None, reject_threshold=None,
-                      rna_min_alt_freq=None, dna_file=None, oxog_min_alt_freq=None, processes=1,
-                      reject_indels=False):
+def read_annotated_vcf(vcf_file, rna_file=None, out_vcf=None, reject_threshold=None,
+                       rna_min_alt_freq=None, dna_file=None, oxog_min_alt_freq=None, processes=1,
+                       reject_indels=False):
     """
     This module reads in the SNVs from the SnpEffed vcf file. It assumes that the SnpEff results
     have been writen to the INFO column. If the header contains a line that starts with  `#CHROM`,
@@ -114,7 +126,7 @@ def read_snpeffed_vcf(snpeff_file, rna_file=None, out_vcf=None, reject_threshold
     Example vcf column header:
     #CHROM  POS     ID      REF     ALT     QUAL    FILTER  INFO
 
-    :param file snpeff_file: An open file handle to the snpeffed vcf file.
+    :param file vcf_file: An open file handle to the snpeff/vep vcf file.
     :param str rna_file: The path to the RNA-seq file. Can be None suggesting that expression
            filtering should not be carried out.
     :param file out_vcf: An open file handle to the output vcf file
@@ -127,24 +139,25 @@ def read_snpeffed_vcf(snpeff_file, rna_file=None, out_vcf=None, reject_threshold
            being oxoG artifacts.
     :param int processes: How many processes should handle the parsing?
     :param bool reject_indels: Should we reject indels?
-    :returns: A parsed dictionary each of snvs and indels to be processed.
-    :rtype: tuple(collections.Counter, collections.Counter)
+    :returns: A parsed dictionary each of snvs and indels to be processed, and the annotator
+    :rtype: tuple(dict, str)
     """
     if out_vcf:
         assert out_vcf.mode == 'w', 'Output vcf file is not open for writing'
-    logging.info('Reading in Mutations from %s', snpeff_file.name)
+    logging.info('Reading in Mutations from %s', vcf_file.name)
     indexes = {'CHROM': 0,
                'POS': 1,
                'REF': 3,
                'ALT': 4,
                'INFO': 7}
 
+    annotator = None
     # Set up the Manager, and the shared dict and queue
     manager = Manager()
     vcf_queue = manager.Queue()
     mutations = manager.dict()
     # Read in the vcf header and identify the columns in the file
-    for line in snpeff_file:
+    for line in vcf_file:
         if line.startswith('#'):
             if line.startswith('#CHROM'):
                 # This is the last line of the header.
@@ -169,6 +182,13 @@ def read_snpeffed_vcf(snpeff_file, rna_file=None, out_vcf=None, reject_threshold
                     write_to_vcf(indexes, out_vcf, header=True)
             elif rna_file or dna_file:
                 print(line, end='', file=out_vcf)
+            if 'VEP=' in line:
+                annotator = 'VEP'
+            elif 'SnpEffVersion' in line:
+                annotator = 'SNPEff' + line.split()[0].split('"')[1].translate(None, string.letters)
+            if annotator not in ('SNPEff3.6', 'vep') and 'SnpEffCmd' in line and 'classic' in line:
+                # If we run SNPEff 4.0+ with the -classic flag
+                annotator = 'SNPEff3.6'
             continue
         elif len(line.strip()) == 0:
             continue
@@ -178,6 +198,9 @@ def read_snpeffed_vcf(snpeff_file, rna_file=None, out_vcf=None, reject_threshold
     for _ in range(0, processes):
         # Add the graceful worker shutdown signal to the queue for every worker.
         vcf_queue.put(None)
+    if annotator is None:
+        raise RuntimeError('Could not determine annotator type from the VCF header. Please check '
+                           'the integrity of the header and retry.')
     # Start the workers
     logging.info('Starting %s workers for vcf parsing.' % processes)
     pool = Pool(processes=processes)
@@ -186,6 +209,7 @@ def read_snpeffed_vcf(snpeff_file, rna_file=None, out_vcf=None, reject_threshold
                                      indexes=indexes,
                                      out_calls=mutations,
                                      rna_file=rna_file,
+                                     annotator=annotator,
                                      reject_threshold=reject_threshold,
                                      rna_min_alt_freq=rna_min_alt_freq,
                                      dna_file=dna_file,
@@ -243,11 +267,10 @@ def read_snpeffed_vcf(snpeff_file, rna_file=None, out_vcf=None, reject_threshold
             out_muts[transcript]['HUGO'] = hugo
 
     if not (out_muts and non_syn_seen):
-        logging.error('Input snpeffed mutations file was empty or had no actionable mutations.')
-        raise RuntimeError('Input snpeffed mutations file was empty or had no actionable '
-                           'mutations.')
+        logging.warning('Input vcf file was empty or had no actionable mutations.')
+        out_muts = {}  # Return an empty dictionary
 
-    return dict(out_muts)
+    return dict(out_muts), annotator
 
 
 def get_ref_pos_alt_aa(aa_change):
@@ -274,14 +297,31 @@ def get_ref_pos_alt_aa(aa_change):
     return parts
 
 
-def get_codon_aa_change(codon_change):
+def get_codon_nuc_change(codon_change):
     """
-    For a given codon change E.g. aAt/aGt, return the changed base ([A,G] in teh example).
-    :param str codon_change: Thecodon change
+    For a given codon change E.g. aAt/aGt, return the changed base ([A,G] in the example).
+
+    :param str codon_change: The codon change
     :return: The modified ref and alt
     :rtype: tuple
+
+    >>> get_codon_nuc_change('aAt/aGt')
+    ('A', 'G')
+    >>> get_codon_nuc_change('agG/agT')
+    ('G', 'T')
+    >>> get_codon_nuc_change('p.A>G')
+    ('A', 'G')
+    >>> get_codon_nuc_change('agg/agg')
+    Traceback (most recent call last):
+    ..
+    AssertionError
     """
-    ref, alt = codon_change.split('/')
+    if '/' in codon_change:
+        ref, alt = codon_change.split('/')
+    else:
+        assert '>' in codon_change
+        ref, alt = codon_change.split('>')
+        ref = ref[-1]  # p.A >> A
     for i in range(3):
         # range(3) is ok because this will only happen with MAV
         if ref[i] == alt[i]:
@@ -291,9 +331,9 @@ def get_codon_aa_change(codon_change):
     assert False
 
 
-def parse_vcf_line(worker_id, queue, indexes, out_calls, rna_file=None, reject_threshold=None,
-                   rna_min_alt_freq=None, dna_file=None, oxog_min_alt_freq=None,
-                   reject_indels=False):
+def parse_vcf_line(worker_id, queue, indexes, out_calls, annotator,
+                   rna_file=None, reject_threshold=None, rna_min_alt_freq=None, dna_file=None,
+                   oxog_min_alt_freq=None, reject_indels=False, ):
     """
     Parse one mutation-containing line in the input vcf.
 
@@ -303,6 +343,7 @@ def parse_vcf_line(worker_id, queue, indexes, out_calls, rna_file=None, reject_t
     :param dict indexes: A dict indicating the fields in the vcf line.
     :param multiprocessing.Manager.dict out_calls: The shared output vcf that will contain the
            output calls.
+    :param str annotator: The Annotator used to annotate the vcf (VEP, SNPEFF_<VERSION>)
     :param str rna_file: The path to the RNA-seq file. Can be None suggesting that expression
            filtering should not be carried out.
     :param int reject_threshold: The read coverage above which we reject a no-ALT-coverage event
@@ -315,6 +356,22 @@ def parse_vcf_line(worker_id, queue, indexes, out_calls, rna_file=None, reject_t
     :param bool reject_indels: Should we reject indels?
     """
     logging.info('VCF parsing worker %s is up and running.' % worker_id)
+    get_snpeff_changes = {'SNPEff3.6': get_snpeff_3_6_changes,
+                          'SNPEff4.0': get_snpeff_4_0_changes,
+                          'SNPEff4.1': get_snpeff_4_x_changes,
+                          'SNPEff4.2': get_snpeff_4_x_changes,
+                          'SNPEff4.3': get_snpeff_4_x_changes,
+                          }
+    # Unfortunately, this logic has to be here and cannot be abstracted into the individual
+    # tool/version methods because we need to know if we can reject this line at this point for not
+    # being annotated (intergenic variant)
+    annot_field_sep = {'SNPEff3.6': 'EFF',
+                       'SNPEff4.0': 'EFF',
+                       'SNPEff4.1': 'ANN',
+                       'SNPEff4.2': 'ANN',
+                       'SNPEff4.3': 'ANN',
+                       'VEP': 'CSQ'
+                       }
     with open('.worker_%s.vcf' % worker_id, 'w') as out_vcf:
         while True:
             line = queue.get(timeout=30)
@@ -323,12 +380,12 @@ def parse_vcf_line(worker_id, queue, indexes, out_calls, rna_file=None, reject_t
             line = line.strip().split('\t')
             line = {x: line[y] for x, y in indexes.items()}
 
+            eff = [x for x in line['INFO'].split(';') if x.startswith(annot_field_sep[annotator])]
             alt_alleles = line['ALT'].split(',')
-            changes = line['INFO'].split(';')[-1]
             if rna_file or dna_file:
                 # NOTE: vcf snvs are 1-based and not 0-based!
                 line['POS'] = int(line['POS']) - 1
-                if changes.startswith('EFF'):
+                if eff:
                     decisions = reject_mutation(line, rna_file, reject_threshold, rna_min_alt_freq,
                                                 dna_file, oxog_min_alt_freq, reject_indels)
                 else:
@@ -359,61 +416,60 @@ def parse_vcf_line(worker_id, queue, indexes, out_calls, rna_file=None, reject_t
                                     line['ALT'])
                     decisions = tuple([reject_decision(True, 'NoRNAFiltering', 'NA', 'NA')
                                        for _ in alt_alleles])
-            changes = re.sub('EFF=', '', changes)
-            changes = [x for x in changes.split(',')
-                       if x.startswith((
-                            'NON_SYNONYMOUS_CODING', 'SYNONYMOUS_CODING', 'STOP_GAINED',  # SNVs
-                            'CODON', 'FRAME'  # INDELs
-                            )) and 'protein_coding' in x]
+
+            if annotator == 'VEP':
+                eff = get_vep_changes(eff[0])
+            else:
+                eff = get_snpeff_changes[annotator](eff[0])
 
             indel = True if len(line['REF']) != len(line['ALT']) and len(decisions) == 1 else None
             for di, decision in enumerate(decisions):
                 if decision.reject:
                     # happens if one of the ALT alleles was rejected but the other wasn't
                     continue
-                for i in range(0, len(changes)):
-                    temp = changes[i].split('|')
+                for i in range(0, len(eff)):
                     if not indel:
                         # MAVs will have a mix of both ALTs in the EFF line so we need to ensure
                         # this change corresponds to the current ALT
-                        codon_aa_change = get_codon_aa_change(temp[2])
-                        if codon_aa_change not in [(line['REF'], alt_alleles[di]),
-                                                   (line['REF'].translate(trans),
-                                                    alt_alleles[di].translate(trans))]:
+                        temp_codon_change = get_codon_nuc_change(eff[i].codon_change)
+                        if temp_codon_change not in [(line['REF'], alt_alleles[di]),
+                                                      (line['REF'].translate(trans),
+                                                       alt_alleles[di].translate(trans))]:
                             continue
-                    ref_aa, pos, alt_aa = get_ref_pos_alt_aa(temp[3])
-                    if not alt_aa:
+                    ref_aa, pos, alt_aa = get_ref_pos_alt_aa(eff[i].aa_change)
+                    if not alt_aa or alt_aa.endswith('?'):
                         if indel:
-                            # Frame shift arising from a deletion. Either a full in-frame codon
-                            # deletion, or a frame shift
-                            if temp[0].startswith('CODON'):
-                                indel = 'full_codon_deleltion'
+                            if 'frameshift_variant' in eff[i].annotation:
+                                if len(line['REF']) > len(line['ALT']):
+                                    # Frame shift arising from a deletion. Either a full in-frame
+                                    # codon deletion, or a frame shift
+                                    indel = 'frame_shift_deletion'
+                                else:
+                                    indel = 'frame_shift_insertion'
                             else:
-                                indel = 'frame_shift_deletion'
+                                indel = 'full_codon_deleltion'
+                        elif alt_aa.endswith('?'):
+                            if ref_aa == '?' and eff[i].warnings == 'WARNING_TRANSCRIPT_INCOMPLETE':
+                                logging.debug('Cannot handle mutation (%s:%s) in a truncated '
+                                              'gencode protein (%s) sequence', line['CHROM'],
+                                              line['POS'], eff[i].transcript_id)
+                                continue
+                            else:
+                                assert False, '? seen in an SNV for the ALT AA'
                         else:
                             # Synonymous change
                             alt_aa = ref_aa
-                    if alt_aa.endswith('?'):
-                        if indel:
-                            indel = 'frame_shift_insertion'
-                        elif ref_aa == '?' and temp[-1] == 'WARNING_TRANSCRIPT_INCOMPLETE)':
-                            logging.debug('Cannot handle mutation (%s:%s) in a truncated gencode '
-                                          'protein (%s) sequence', line['CHROM'], line['POS'],
-                                          temp[8])
-                            continue
-                        else:
-                            assert False, '? seen in an SNV for the ALT AA'
-
                     # At this point, indel is False, frame_shift_X, full_codon_deletion, or True.
                     # True implies it is a full codon insertion or a codon insertion with codon
                     # change.
                     if indel is True:
                         indel = 'full_codon_insertion'
 
-                    out_calls[(temp[8], temp[5], temp[3], temp[4])] = {
+                    out_calls[(eff[i].transcript_id, eff[i].gene_name, eff[i].aa_change,
+                               eff[i].transcript_len)] = {
                         'AA': {'REF': ref_aa,
                                'ALT': alt_aa,
-                               'change': temp[2],
+                               'change': eff[i].codon_change,
                                'VAF': str(round(decision.vaf, 2)),
                                'POS': pos},
                         'NUC': {'REF': line['REF'],
@@ -661,9 +717,9 @@ def merge_adjacent_snvs(snvs, muts):
     >>> merge_adjacent_snvs(snvs, ['R148R', 'R148Q'])
     'R148K
     >>> snvs = {'A123B': {'NUC': {'ALT': 'C'}}, \
-                'C123D': {'NUC': {'ALT': 'A'}}, \
-                'E123F': {'NUC': {'ALT': 'T'}}}
-    >>> merge_adjacent_snvs(snvs, ['A123B', 'C123D','E123F'])
+                'A123D': {'NUC': {'ALT': 'A'}}, \
+                'A123F': {'NUC': {'ALT': 'T'}}}
+    >>> merge_adjacent_snvs(snvs, ['A123B', 'A123D','A123F'])
     'A123H'
     """
     if len(muts) == 3:
@@ -833,10 +889,10 @@ def insert_mutations(protein_fa, mutations, tumfile, normfile, peplen, rna_bam=N
         if not mutations[pept]:
             continue
 
-        peptide_muts = deepcopy(mutations)
         all_mutation_groups = get_mutation_groups(mutations[pept], peplen, pfasta_name, rna_bam)
 
         for mut_group in all_mutation_groups:
+            peptide_muts = deepcopy(mutations)
             for group_muts in mut_group:
                 group_muts = correct_for_same_codon(peptide_muts[pept], group_muts)
                 # After correcting, if there is only ONE mutation and it is a stop gain, disregard
@@ -856,6 +912,7 @@ def insert_mutations(protein_fa, mutations, tumfile, normfile, peplen, rna_bam=N
                             }
                 mut_pos = peptide_muts[pept][group_muts[0]]['AA']['POS']
                 prev = max(mut_pos - peplen, 0)  # First possible AA in the IAR
+                skip = False  # A flag to identify we need to skip this group
                 for group_mut in group_muts:
                     mut_pos = peptide_muts[pept][group_mut]['AA']['POS']
                     ref = peptide_muts[pept][group_mut]['AA']['REF']
@@ -880,6 +937,10 @@ def insert_mutations(protein_fa, mutations, tumfile, normfile, peplen, rna_bam=N
                         if 'frame_shift' not in peptide_muts[pept][group_mut]['indel']:
                             # Full codon insertion or insertion with codon change, or full codon
                             # deletion.  We assume none of these events affect splicing.
+                            if ref == '-':
+                                # VEP represents an in-frame insertion as -/Q where a Q is inserted
+                                # with no change to the surrounding sequence
+                                out_pept['tum_seq'].append(protein[mut_pos - 1])
                             out_pept['tum_seq'].extend(alt)
                             out_pept['norm_seq'].extend(protein[mut_pos - 1:mut_pos - 1 + len(ref)])
                             prev = mut_pos + len(ref) - 1
@@ -889,27 +950,55 @@ def insert_mutations(protein_fa, mutations, tumfile, normfile, peplen, rna_bam=N
                             aa_seq = get_genomic_seq(pept, group_muts[group_mut_pos:],
                                                      peptide_muts[pept], chroms, exons, cds_starts,
                                                      extend_length)
-                            out_pept['tum_seq'].append(aa_seq)
+                            if aa_seq is None:
+                                # aa_seq will be a string of characters for a frameshift mutant
+                                # and None if it was a frameshift mutant in a gene that
+                                # has no known CDS start.  We can't handle the second case.
+                                skip = True
+                                logging.warning('(%s) has no known CDS start. Skipping.',
+                                                out_pept['pept_name'])
+                                break
+                            out_pept['tum_seq'].extend(aa_seq)
+                            # Append the immediate next normal amino acids in the chain as long as
+                            # they match the translated sequence. We add one mismatch and then
+                            # terminate the normal strand. We do this in case we need to trim the
+                            # sequences.
+                            for pos, aa in enumerate(aa_seq):
+                                if pos + mut_pos > len(protein):
+                                    # Reached the end of the protein
+                                    break
+                                out_pept['norm_seq'].append(protein[mut_pos + pos - 1])
+                                if aa != protein[mut_pos + pos - 1]:
+                                    break
                             out_pept['norm_seq'].append('#')  # Terminate normal strand
                             prev = None
                         break
 
+                if skip:
+                    break
                 if prev is not None:
                     out_pept['tum_seq'].extend(protein[prev:prev + peplen - 1])
                     out_pept['norm_seq'].extend(protein[prev:prev + peplen - 1])
-                    if peptide_muts[pept]['has_indel']:
-                        # Handle left side of the IAR
-                        fm = first_mismatch(out_pept['tum_seq'], out_pept['norm_seq'])
-                        if fm >= peplen:
-                            for _ in range(peplen - 1, fm):
-                                out_pept['tum_seq'].pop(0)
-                                out_pept['norm_seq'].pop(0)
-                        # Handle right side of the IAR
-                        fm = first_mismatch(out_pept['tum_seq'][::-1], out_pept['norm_seq'][::-1])
-                        if fm >= peplen:
-                            for _ in range(peplen - 1, fm):
-                                out_pept['tum_seq'].pop()
-                                out_pept['norm_seq'].pop()
+                if peptide_muts[pept]['has_indel']:
+                    # Handle left side of the IAR
+                    fm = first_mismatch(out_pept['tum_seq'], out_pept['norm_seq'])
+                    if fm >= peplen:
+                        for _ in range(peplen - 1, fm):
+                            out_pept['tum_seq'].pop(0)
+                            out_pept['norm_seq'].pop(0)
+                    elif fm == -1:
+                        # This will happen if they are the same sequence after translating. Discard
+                        # This sequence
+                        logging.warning('IAR in (%s) is exactly the same as its normal counterpart '
+                                        '(T: %s, N: %s). Skipping.', out_pept['pept_name'],
+                                        ''.join(out_pept['tum_seq']), ''.join(out_pept['norm_seq']))
+                        continue
+                    # Handle right side of the IAR
+                    fm = first_mismatch(out_pept['tum_seq'][::-1], out_pept['norm_seq'][::-1])
+                    if fm >= peplen:
+                        for _ in range(peplen - 1, fm):
+                            out_pept['tum_seq'].pop()
+                            out_pept['norm_seq'].pop()
                 write_pepts_to_file(out_pept, tumfile, normfile, peplen)
     return None
 
@@ -927,18 +1016,36 @@ def get_genomic_seq(pept, group_muts, pept_muts, chroms, exons, cds_starts, exte
     :param int extend_length: see insert_mutations:`extend_length`
     :return:
     """
-    chrom = pept_muts.values()[0]['NUC']['CHROM']
-    first_mutation = group_muts[0]
+    chrom = pept_muts[group_muts[0]]['NUC']['CHROM']
+    first_mut = group_muts[0]
     # curr_codon_start_pos will give the start position of the codon immediately BEFORE the mutation
     curr_codon_start_pos, positive_strand = get_exon_start_pos(
-        pept, pept_muts[first_mutation]['AA']['POS'], exons, cds_starts)
+        pept, pept_muts[first_mut]['AA']['POS'], exons, cds_starts)
+    if curr_codon_start_pos is None:
+        # This gene doesn't have a known CDS so we can't handle it.
+        return None
+    curr_codon_start_pos -= 1  # The value obtained from the gtf is 1-based
+
     codon_extend_length = extend_length * 3  # +1 for the current codon
-    assert abs(curr_codon_start_pos -
-               pept_muts[first_mutation]['NUC']['POS'] + 1) <= 2  # POS is 1-based
+
+    if positive_strand:
+        # If the indel started at a new codon, the first base in the insertion or the retained base
+        # in the deletion actually belongs to the previous codon reported by annotators since the
+        # first "Affected" codon is reported.  This is a problem only on the positive strand
+        if curr_codon_start_pos == pept_muts[first_mut]['NUC']['POS'] + 1:
+            if (len(pept_muts[first_mut]['NUC']['ALT']) >
+                    len(pept_muts[first_mut]['NUC']['REF'])):
+                # In an insertion, since we just dump the contents of alt into the tumor seq, we can
+                # just modify alt to remove that first base
+                pept_muts[first_mut]['NUC']['ALT'] = pept_muts[first_mut]['NUC']['ALT'][1:]
+            else:
+                # In a deletion, we appned the alt allele and extend by len(ref) - len(alt). We can
+                # fix this by trimming both ref and alt.
+                pept_muts[first_mut]['NUC']['ALT'] = ''
+                pept_muts[first_mut]['NUC']['REF'] = pept_muts[first_mut]['NUC']['REF'][1:]
+
     next_n_bases = []
-    prev = curr_codon_start_pos - 1  # The value obtained from the gtf is 1-based
-    if not positive_strand:
-        prev += 3  # So we get the whole codon on the negative strand
+    prev = curr_codon_start_pos
     for mut in group_muts:
         mut_pos = pept_muts[mut]['NUC']['POS']
         if abs(mut_pos - curr_codon_start_pos) > extend_length:
@@ -946,27 +1053,33 @@ def get_genomic_seq(pept, group_muts, pept_muts, chroms, exons, cds_starts, exte
         if positive_strand:
             next_n_bases.extend(chroms[chrom][prev:mut_pos])
         else:
-            next_n_bases.extend(chroms[chrom][mut_pos + 1:prev][::-1])
+            next_n_bases.extend(chroms[chrom][mut_pos + 1:prev + 1][::-1])
         if len(pept_muts[mut]['NUC']['REF']) <= len(pept_muts[mut]['NUC']['ALT']):
             # Not a deletion. Just insert the alt allele
-            next_n_bases.append(pept_muts[mut]['NUC']['ALT'])
+            if positive_strand:
+                next_n_bases.append(pept_muts[mut]['NUC']['ALT'])
+                prev = mut_pos + 1
+            else:
+                next_n_bases.append(pept_muts[mut]['NUC']['ALT'][::-1])
+                prev = mut_pos - 1
             codon_extend_length -= (len(pept_muts[mut]['NUC']['ALT']) - 1)
-            prev = mut_pos + 1
         else:
             # Deletion
             del_length = len(pept_muts[mut]['NUC']['REF']) - len(pept_muts[mut]['NUC']['ALT'])
             if positive_strand:
                 prev = mut_pos + del_length + 1
             else:
-                for _ in range(del_length + 1):
+                for _ in range(del_length):
                     next_n_bases.pop()
-                prev = mut_pos + 1
+                prev = mut_pos - 1
+            codon_extend_length += (len(pept_muts[mut]['NUC']['REF']) - 1)
             next_n_bases.append(pept_muts[mut]['NUC']['ALT'])
     if positive_strand:
-        next_n_bases.extend(chroms[chrom][prev:curr_codon_start_pos - 1 + codon_extend_length])
+        next_n_bases.extend(chroms[chrom][prev:curr_codon_start_pos + codon_extend_length])
         next_n_bases = ''.join(next_n_bases)
     else:
-        next_n_bases.extend(chroms[chrom][curr_codon_start_pos - codon_extend_length:prev][::-1])
+        next_n_bases.extend(chroms[chrom][curr_codon_start_pos -
+                                          codon_extend_length:prev + 1][::-1])
         next_n_bases = ''.join(next_n_bases).translate(trans)
     genomic_seq = translate(next_n_bases)
     if '*' in genomic_seq:
@@ -1054,13 +1167,14 @@ def parse_peptides(tumfile, normfile, prefix, suffix):
             transcript_mutation = '_'.join([pep_name[1]]+pep_name[3:])
             if peptides[(gene_name, hugo_gene)] == 0:
                 try:
-                    peptides[(gene_name, hugo_gene)] = {transcript_mutation:
-                                                            (pep_seq, normal_peptides[full_pep_name])}
+                    peptides[(gene_name, hugo_gene)] = {transcript_mutation: (
+                        pep_seq, normal_peptides[full_pep_name])}
                 except KeyError:
                     peptides[(gene_name, hugo_gene)] = {transcript_mutation: (pep_seq, None)}
             else:
                 try:
-                    peptides[(gene_name, hugo_gene)][transcript_mutation] = (pep_seq, normal_peptides[full_pep_name])
+                    peptides[(gene_name, hugo_gene)][transcript_mutation] = (
+                        pep_seq, normal_peptides[full_pep_name])
                 except KeyError:
                     peptides[(gene_name, hugo_gene)][transcript_mutation] = (pep_seq, None)
     outmap = {}
@@ -1096,12 +1210,14 @@ def parse_peptides(tumfile, normfile, prefix, suffix):
     return None
 
 
-def get_proteome_data(infile):
+def get_proteome_data(infile, drop_transcript_version=False):
     """
     Loads GENCODE translated transcript sequences into a dictionary
 
     :param file infile: GENCODE file object
-    :return: Mapping of concatenated Ensembl gene IDs, Ensembl transcript IDs, and HUGO names to protein sequences
+    :return: Mapping of concatenated Ensembl gene IDs, Ensembl transcript IDs, and HUGO names to
+             protein sequences
+    :param bool drop_transcript_version: Drop the version part of transcript ids.
     :rtype: dict
     """
     # Read the proteomic fasta
@@ -1119,7 +1235,10 @@ def get_proteome_data(infile):
         #  6. Length in AA residues       -- e.g 305
         #  We need columns 0b, 1,  and 5
         try:
-            record_name = '_'.join(itemgetter(-6, -7, -2)(fa_seq[0].split('|')))
+            record_name = list(itemgetter(-6, -7, -2)(fa_seq[0].split('|')))
+            if drop_transcript_version:
+                record_name[1] = record_name[1].split('.')[0]
+            record_name = '_'.join(record_name)
         except IndexError:
             raise RuntimeError('Was the input peptides file obtained from Gencode?')
         peptides[record_name] = list(fa_seq[2])
@@ -1138,6 +1257,7 @@ def main(params):
     evidence in an RNA-seq bam (Mapped to the genome reference). It does not look for evidence of
     fusion events in the RNA-seq bam.
     """
+    start_time = time.time()
     if params.logfile is not None:
         params.logfile = os.path.abspath(os.path.expanduser(params.logfile))
         assert os.path.exists(os.path.dirname(params.logfile)), 'Invalid Directory to write logfile'
@@ -1151,7 +1271,9 @@ def main(params):
         params.rna_file = os.path.abspath(os.path.expanduser(params.rna_file))
         if not os.path.exists(params.rna_file):
             raise RuntimeError('Could not file the RNA-seq bam file at the provided location.')
-        if not os.path.exists(params.rna_file + '.bai'):
+        if not (os.path.exists(params.rna_file + '.bai') or
+                    os.path.exists(params.rna_file[:-1] + 'i')):
+            # /a/b/c/def.bam -> /a/b/c/def.bam.bai or /a/b/c/def.bai
             raise RuntimeError('Could not file the RNA-seq bai file at the provided location.')
 
     if params.dna_file is not None:
@@ -1159,45 +1281,67 @@ def main(params):
         if not os.path.exists(params.dna_file):
             raise RuntimeError('Could not file the input tumor DNA-seq bam file at the provided '
                                'location.')
-        if not os.path.exists(params.dna_file + '.bai'):
+        if not (os.path.exists(params.dna_file + '.bai') or
+                    os.path.exists(params.dna_file[:-1] + 'i')):
             raise RuntimeError('Could not file the input tumor DNA-seq bai file at the provided '
                                'location.')
 
     # Load proteomic data
     proteome_data = None
     if params.peptide_file:
-        proteome_data = get_proteome_data(params.peptide_file)
+        proteome_data = get_proteome_data(params.peptide_file, params.vep_file is not None)
         params.peptide_file.close()
 
-    # Read in snpeffed vcf files
+    # Read in annotated vcf files
     mutations = None
     genes_to_translate = set()
-    if params.snpeff_file:
+    annotator = None
+    if params.snpeff_file or params.vep_file:
         if params.rna_file or params.dna_file:
             out_vcf = open('_'.join([params.prefix, 'transgened.vcf']), 'w')
         else:
             out_vcf = None
         try:
-            mutations = read_snpeffed_vcf(snpeff_file=params.snpeff_file,
-                                          rna_file=params.rna_file,
-                                          out_vcf=out_vcf,
-                                          reject_threshold=params.reject_threshold,
-                                          rna_min_alt_freq=params.rna_min_alt_freq,
-                                          dna_file=params.dna_file,
-                                          oxog_min_alt_freq=params.oxog_min_alt_freq,
-                                          processes=params.cores,
-                                          reject_indels=not(params.genome_file and
-                                                            params.annotation_file))
+            mutations, annotator = read_annotated_vcf(vcf_file=(params.snpeff_file or
+                                                                params.vep_file),
+                                                      rna_file=params.rna_file,
+                                                      out_vcf=out_vcf,
+                                                      reject_threshold=params.reject_threshold,
+                                                      rna_min_alt_freq=params.rna_min_alt_freq,
+                                                      dna_file=params.dna_file,
+                                                      oxog_min_alt_freq=params.oxog_min_alt_freq,
+                                                      processes=params.cores,
+                                                      reject_indels=not(params.genome_file and
+                                                                        params.annotation_file))
+        except:
+            raise
+        else:
+            if annotator not in ('SNPEff3.6', 'SNPEff4.0', 'VEP'):
+                # SNPEff_4.1+ does not give us the exact codon changes (Aag/Gat) instead it just
+                # gives us the changed Nucleotide in cDNA space (p.A>G).  We need to translate all
+                # genes now so we can get the actual codon changes.
+                genes_to_translate.update([mutations[m]['HUGO'] for m in mutations])
+                temp_string = annotator + ' annotated vcfs'
+            else:
+                genes_to_translate.update([mutations[m]['HUGO']
+                                           for m in mutations if mutations[m]['has_indel']])
+                temp_string = 'indels'
+            if genes_to_translate and not (params.genome_file and params.annotation_file):
+                raise RuntimeError('Cannot handle %s without a genome fasta and a gencode '
+                                   'annotation.' % temp_string)
         finally:
             if params.rna_file or params.dna_file:
                 out_vcf.close()
-            params.snpeff_file.close()
+            # These files were opened by argparse
+            if params.snpeff_file:
+                params.snpeff_file.close()
+            else:
+                params.vep_file.close()
 
-        genes_to_translate.update([mutations[m]['HUGO']
-                                   for m in mutations if mutations[m]['has_indel']])
     # Load data for generating fusion peptides
     if params.transcript_file:
-        transcriptome, gene_transcript_ids = get_transcriptome_data(params.transcript_file)
+        transcriptome, gene_transcript_ids = get_transcriptome_data(params.transcript_file,
+                                                                    params.vep_file is not None)
     else:
         transcriptome, gene_transcript_ids = None, None
 
@@ -1213,16 +1357,51 @@ def main(params):
         finally:
             out_bedpe.close()
         genes_to_translate.update(sum([(record.hugo1, record.hugo2) for record in fusions], ()))
+
+    if not (fusions or mutations):
+        logging.warning('The input files had no actionable mutations.')
+        logging.info('Transgene successfully ran in %s seconds', round(time.time() - start_time, 2))
+        exit(0)
     chroms = {}
     if genes_to_translate:
         exons, cds_starts = get_exons(params.genome_file, params.annotation_file,
-                                      genes_to_translate)
+                                      genes_to_translate,
+                                      params.vep_file is not None)
 
         chroms_of_interest = {e[0].seqname for e in exons.values()}
         params.genome_file.seek(0)
         for header, comment, seq in read_fasta(params.genome_file, 'ACGTN'):
             if header in chroms_of_interest:
                 chroms[header] = seq
+
+    # SNPEff 4.1+ does not give use the codon change so before we can start inserting mutations, we
+    # need to fill in the blanks.
+    if annotator and annotator not in ('SNPEff3.6', 'SNPEff4.0', 'VEP'):
+        not_in_annot = set()
+        for transcript in mutations:
+            for mutation in mutations[transcript]:
+                if mutation in ('HUGO', 'has_indel', 'len'):
+                    continue
+                else:
+                    if mutations[transcript][mutation]['indel'] is None:
+                        temp_mut = mutations[transcript][mutation]
+                        codon = get_codon(transcript,  temp_mut['AA']['POS'], exons, cds_starts,
+                                          chroms[mutations[transcript][mutation]['NUC']['CHROM']])
+                        if codon is None:
+                            not_in_annot.add(transcript)
+                            logging.warning('Transcript %s was not found in the given GTF, or did '
+                                            'not have a registered CDS start. Skipping.',
+                                            transcript)
+                            break
+                        mutated_pos = int(temp_mut['AA']['change'][2:-3])
+                        mutated_pos = (mutated_pos - 1) % 3
+                        codon_change = temp_mut['AA']['change'][-3], temp_mut['AA']['change'][-1]
+                        assert codon[mutated_pos] == codon_change[0]
+                        outstring = list((codon + '/' + codon).lower())
+                        outstring[mutated_pos], outstring[4 + mutated_pos] = codon_change
+                        mutations[transcript][mutation]['AA']['change'] = ''.join(outstring)
+        for transcript in not_in_annot:
+            mutations.pop(transcript)
 
     for peplen in params.pep_lens.split(','):
         logging.info('Processing %s-mers', peplen)
@@ -1242,18 +1421,20 @@ def main(params):
 
         if params.no_json_dumps:
             shutil.move(tumfile_path, '_'.join([params.prefix, 'tumor', peplen,
-                                                'mer_snpeffed.faa']))
+                                                'mer_peptides.faa']))
             shutil.move(normfile_path, '_'.join([params.prefix, 'normal', peplen,
-                                                 'mer_snpeffed.faa']))
+                                                 'mer_peptides.faa']))
         else:
             parse_peptides(tumfile_path, normfile_path, params.prefix,
-                           '_'.join([peplen, 'mer_snpeffed.faa']))
+                           '_'.join([peplen, 'mer_peptides.faa']))
             os.remove(tumfile_path)
             os.remove(normfile_path)
 
     # Temporary file used during fusion alignment steps
     if os.path.exists('transgene_fusion_alignments.pkl'):
         os.remove('transgene_fusion_alignments.pkl')
+
+    logging.info('Transgene successfully ran in %s seconds', round(time.time() - start_time, 2))
 
 
 def run_transgene():
@@ -1264,11 +1445,14 @@ def run_transgene():
     # Mutation related options
     parser.add_argument('--peptides', dest='peptide_file', type=argparse.FileType('r'),
                         help='Path to GENCODE translation FASTA file')
-    parser.add_argument('--snpeff', dest='snpeff_file', type=argparse.FileType('r'),
-                        help='Path to snpeff file')
+    vcf_file = parser.add_mutually_exclusive_group()
+    vcf_file.add_argument('--snpeff', dest='snpeff_file', type=argparse.FileType('r'),
+                          help='Path to snpeff file', default=None)
+    vcf_file.add_argument('--vep', dest='vep_file', type=argparse.FileType('r'),
+                          help='Path to vep file', default=None)
     parser.add_argument('--genome', dest='genome_file',
-                        help='Path to reference genome fasta file, required if calling fusions or '
-                             'indels.', type=file_type, required=False, default=None)
+                        help='Path to reference genome fasta file, required if calling fusions, '
+                        'indels, or SNPEff 4.1+.', type=file_type, required=False, default=None)
     parser.add_argument('--indel_extend_length', dest='extend_length',
                         help='The number of Codons downstream to an indel to process.',
                         type=int, default=10)
@@ -1278,7 +1462,8 @@ def run_transgene():
     parser.add_argument('--transcripts', dest='transcript_file', type=argparse.FileType('r'),
                         help='Path to GENCODE transcript FASTA file. Required if calling fusions.')
     parser.add_argument('--annotation', dest='annotation_file',
-                        help='Path to gencode annotation file. Required if calling fusions.',
+                        help='Path to gencode annotation file. Required if calling fusions or if'
+                        'using SNPEff 4.1+.',
                         type=file_type)
     parser.add_argument('--filter_mt_fusions', dest='filter_mt', action='store_true',
                         help='Filter fusions involving Mitochondrial genes.', required=False)
@@ -1340,7 +1525,7 @@ def run_transgene():
                         default=1)
     params = parser.parse_args()
 
-    if params.snpeff_file and not params.peptide_file:
+    if (params.snpeff_file or params.vep_file) and not params.peptide_file:
         raise ValueError('VCF file requires GENCODE translation FASTA file')
 
     if params.fusion_file and not params.transcript_file:
