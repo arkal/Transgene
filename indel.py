@@ -1,7 +1,7 @@
 import logging
 
 import pysam
-from common import reject_decision
+from common import reject_decision, trans
 
 
 def reject_indel(indel, rna_bam=None, reject_threshold=None, rna_min_alt_freq=None):
@@ -86,15 +86,23 @@ def get_indel_alignment_info(rna_bam, vcf_record):
                 # This is a spliced alignment. We will not consider it
                 continue
             reads['covering'] += 1
-            if read.alignment.seq[read.query_position] != vcf_record['REF'][0]:
-                logging.warning('read %s has %s at pos %s. expected %s', read.alignment.query_name,
-                                read.alignment.seq[read.query_position], vcf_record['POS'] + 1,
-                                vcf_record['REF'][0])
-                continue
-            if read.indel == 0:
+            if read.query_position is None:
+                # This is possibly a non-left-aligned deletion (maybe with a mutation)
+                # REF:  A C T G A C T G A C T G A C T G A C T G A C T G
+                # Rd1:                  A C T G A C T G-----T G A C T G
+                # Rd2:                  A C T G A C T-----T T G A C T G    << mismatch in T
+                #
+                # read.indel will be 0 since this is inside an indel.
+                pass
+            elif read.indel == 0:
                 # No indel on this read
                 output_counts['REF'] += 1
                 continue
+            elif read.alignment.seq[read.query_position] != vcf_record['REF'][0]:
+                logging.warning('read %s has %s at pos %s. expected %s', read.alignment.query_name,
+                                read.alignment.seq[read.query_position], vcf_record['POS'] + 1,
+                                vcf_record['REF'][0])
+
             if deletion:
                 if read.indel == -indel_length:
                     if (ord(read.alignment.qual[read.query_position]) >= 63 and
@@ -133,6 +141,13 @@ def get_exon_start_pos(transcript_name, peptide_pos, exons, cds_starts):
     :return: The start position and a value identifying if the gene is on the positive strand
     :rtype: int, bool
     """
+    if transcript_name not in exons:
+        logging.warning('Transcript %s was not present in the GTF.', transcript_name)
+        return None, None
+    if transcript_name not in cds_starts:
+        logging.warning('Transcript %s does not have a registered CDS start.', transcript_name)
+        return None, None
+
     positive_strand = exons[transcript_name][0].strand == '+'
     if positive_strand:
         transcript_exons = [(exon.start, exon.end) for exon in exons[transcript_name]
@@ -166,3 +181,48 @@ def get_exon_start_pos(transcript_name, peptide_pos, exons, cds_starts):
         else:
             total += exon_len/3
             frame = exon_len % 3
+
+
+def get_codon(transcript_name, peptide_pos, exons, cds_starts, chrom):
+    """
+    Get the codon for a given amino acid in a transcript
+
+    :param str transcript_name: The peptide name
+    :param int peptide_pos: A protein position in a peptide
+    :param dict exons: See return value of `transgene::get_exons`
+    :param dict cds_starts: See return value of `transgene::get_exons`
+    :param str chrom: The sequence for the chromosome containing the transcript
+    :return: The codon
+    :rtype: str
+    """
+    codon_start, positive_strand = get_exon_start_pos(transcript_name, peptide_pos, exons,
+                                                     cds_starts)
+    if codon_start is None:
+        # Could not find the transcript, or it didn't have a CDS start
+        return None
+
+    if positive_strand:
+        for i, exon in enumerate(exons[transcript_name]):
+            if exon.end - codon_start in (0, 1):
+                # This is a spliced exon and needs to be handled properly
+                lhs = exon.end - codon_start + 1  # Number of nucleotides on the left hand side
+                next_exon_start = exons[transcript_name][i + 1].start
+                codon = (chrom[codon_start - 1:codon_start - 1 + lhs] +
+                         chrom[next_exon_start - 1:next_exon_start - 1 + (3 - lhs)])
+                break
+        else:
+            codon = chrom[codon_start-1:codon_start+2]
+    else:
+        for i, exon in enumerate(exons[transcript_name]):
+            if codon_start - exon.start in (0, 1):
+                # This is a spliced exon and needs to be handled properly
+                rhs = codon_start - exon.start + 1  # Number of nucleotides on the right hand side
+                next_exon_end = exons[transcript_name][i + 1].end
+                codon = (chrom[next_exon_end - (3 - rhs):next_exon_end] +
+                         chrom[codon_start - rhs:codon_start])
+                break
+        else:
+            codon = chrom[codon_start - 3:codon_start]
+        codon = codon[::-1].translate(trans)
+
+    return codon.upper()

@@ -11,11 +11,12 @@ import swalign
 from common import read_fasta, trans, BEDPE, translate
 
 
-def get_transcriptome_data(infile):
+def get_transcriptome_data(infile, drop_transcript_version=False):
     """
     Parses Gencode transcript FASTA file and returns CDS sequences keyed by the transcript ID
 
     :param file infile: Gencode FASTA file object
+    :param bool drop_transcript_version: Drop the version part of transcript ids.
     :return: {transcript ID: transcripts} and {gene ID: transcript IDs}
     :rtype: tuple
     """
@@ -29,6 +30,8 @@ def get_transcriptome_data(infile):
             # Remove the version number on gene ID
             gene_id, version = match.group("gene_id").split('.')
             transcript_id = match.group("transcript_id")
+            if drop_transcript_version:
+                transcript_id = transcript_id.split('.')[0]
             # GTF is one-based. Make interval [zero, one-based)
             start = int(match.group("start")) - 1
             stop = int(match.group("stop"))
@@ -141,6 +144,8 @@ def read_fusions(fusion_file, gene_annotations, filter_mt, filter_ig, filter_rg,
             print('\t'.join(line), file=out_bedpe)
             calls.append(record)
 
+    if not calls:
+        logging.warning('Input bedpe file was empty or had no actionable mutations.')
     return calls
 
 # Namedtuple for storing alignment metrics

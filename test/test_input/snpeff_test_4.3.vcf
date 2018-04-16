@@ -1,0 +1,27 @@
+##fileformat=VCFv4.0
+##SnpEffVersion="4.3t (build 2017-11-24 10:18), by Pablo Cingolani"
+##SnpEffCmd="SnpEff  -no-intergenic -no-downstream -no-upstream -noStats hg19_gencode /data1/snpeff_test.vcf "
+##INFO=<ID=ANN,Number=.,Type=String,Description="Functional annotations: 'Allele | Annotation | Annotation_Impact | Gene_Name | Gene_ID | Feature_Type | Feature_ID | Transcript_BioType | Rank | HGVS.c | HGVS.p | cDNA.pos / cDNA.length | CDS.pos / CDS.length | AA.pos / AA.length | Distance | ERRORS / WARNINGS / INFO' ">
+##INFO=<ID=LOF,Number=.,Type=String,Description="Predicted loss of function effects for this variant. Format: 'Gene_Name | Gene_ID | Number_of_transcripts_in_gene | Percent_of_transcripts_affected'">
+##INFO=<ID=NMD,Number=.,Type=String,Description="Predicted nonsense mediated decay effects for this variant. Format: 'Gene_Name | Gene_ID | Number_of_transcripts_in_gene | Percent_of_transcripts_affected'">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+chr6	30114909	.	AGGG	A	.	PASS	callers=FAKE;ANN=A|disruptive_inframe_deletion|MODERATE|TRIM40|ENSG00000204614.4|transcript|ENST00000307859.4|protein_coding|3/5|c.503_505delGGG|p.Arg168_Ala169delinsThr|530/1640|503/690|168/229||
+chr6	30529739	.	G	C	.	PASS	callers=FAKE;ANN=C|missense_variant|MODERATE|PRR3|ENSG00000204576.7|transcript|ENST00000376560.3|protein_coding|3/4|c.298G>C|p.Gly100Arg|757/2254|298/567|100/188||
+chr6	30529745	.	TGGGG	T	.	PASS	callers=FAKE;ANN=T|frameshift_variant|HIGH|PRR3|ENSG00000204576.7|transcript|ENST00000376560.3|protein_coding|3/4|c.305_308delGGGG|p.Trp102fs|764/2254|305/567|102/188||
+chr6	30891270	.	T	TCAA	.	PASS	callers=FAKE;ANN=TCAA|conservative_inframe_insertion|MODERATE|VARS2|ENSG00000137411.12|transcript|ENST00000321897.5|protein_coding|24/29|c.2454_2455insCAA|p.Cys818_Asp819insGln|3087/4073|2455/3192|819/1063||
+chr6	30891277	.	T	C	.	PASS	callers=FAKE;ANN=C|missense_variant|MODERATE|VARS2|ENSG00000137411.12|transcript|ENST00000321897.5|protein_coding|24/29|c.2461T>C|p.Tyr821His|3093/4073|2461/3192|821/1063||
+chr6	31515979	.	C	CA	.	PASS	callers=FAKE;ANN=CA|frameshift_variant|HIGH|NFKBIL1|ENSG00000204498.6|transcript|ENST00000376148.4|protein_coding|2/4|c.97_98insA|p.Arg33fs|212/1478|98/1146|33/381||
+chr6	31515991	.	T	A	.	PASS	callers=FAKE;ANN=A|missense_variant|MODERATE|NFKBIL1|ENSG00000204498.6|transcript|ENST00000376148.4|protein_coding|2/4|c.109T>A|p.Phe37Ile|223/1478|109/1146|37/381||
+chr6	31545042	.	GGCT	G	.	PASS	callers=FAKE;ANN=G|conservative_inframe_deletion|MODERATE|TNF|ENSG00000232810.3|transcript|ENST00000449264.2|protein_coding|4/4|c.433_435delTGC|p.Cys145del|608/1676|433/702|145/233||INFO_REALIGN_3_PRIME
+chr6	31669898	.	A	G	.	PASS	callers=strelka,radia,mutect,somaticsniper,muse;ANN=G|missense_variant|MODERATE|ABHD16A|ENSG00000204427.7|transcript|ENST00000395952.3|protein_coding|2/20|c.142T>C|p.Tyr48His|305/2103|142/1677|48/558||
+chr6	31670394	.	C	T	.	PASS	callers=strelka,radia,mutect,somaticsniper,muse;ANN=T|missense_variant|MODERATE|ABHD16A|ENSG00000204427.7|transcript|ENST00000440843.2|protein_coding|1/18|c.152G>A|p.Gly51Asp|454/1906|152/1578|51/525||
+chr6	31670475	.	G	T	.	PASS	callers=strelka,radia,mutect,somaticsniper,muse;ANN=T|missense_variant|MODERATE|ABHD16A|ENSG00000204427.7|transcript|ENST00000440843.2|protein_coding|1/18|c.71C>A|p.Ser24Tyr|373/1906|71/1578|24/525||
+chr6	31670934	.	C	T,G	.	PASS	callers=strelka,radia,mutect,somaticsniper,muse;ANN=G|missense_variant|MODERATE|ABHD16A|ENSG00000204427.7|transcript|ENST00000395952.3|protein_coding|1/20|c.125G>C|p.Ser42Thr|288/2103|125/1677|42/558||,T|missense_variant|MODERATE|ABHD16A|ENSG00000204427.7|transcript|ENST00000395952.3|protein_coding|1/20|c.125G>A|p.Ser42Asn|288/2103|125/1677|42/558||
+chr6	31670992	.	C	A	.	PASS	callers=FAKE;ANN=A|stop_gained|HIGH|ABHD16A|ENSG00000204427.7|transcript|ENST00000395952.3|protein_coding|1/20|c.67G>T|p.Glu23*|230/2103|67/1677|23/558||
+chr6	31671003	.	T	C	.	PASS	callers=strelka,radia,mutect,somaticsniper,muse;ANN=C|missense_variant|MODERATE|ABHD16A|ENSG00000204427.7|transcript|ENST00000395952.3|protein_coding|1/20|c.56A>G|p.Glu19Gly|219/2103|56/1677|19/558||
+chr6	31671008	.	G	C	.	PASS	callers=FAKE;ANN=C|stop_gained|HIGH|ABHD16A|ENSG00000204427.7|transcript|ENST00000395952.3|protein_coding|1/20|c.51C>G|p.Tyr17*|214/2103|51/1677|17/558||
+chr6	31740812	.	GGATTTT	G	.	PASS	callers=FAKE;ANN=G|conservative_inframe_deletion|MODERATE|VWA7|ENSG00000204396.6|transcript|ENST00000375688.4|protein_coding|7/17|c.1000_1005delAAAATC|p.Lys334_Ile335del|1206/2881|1000/2676|334/891||
+chr6	31842572	.	A	G	.	PASS	callers=FAKE;ANN=G|missense_variant|MODERATE|SLC44A4|ENSG00000204385.6|transcript|ENST00000229729.6|protein_coding|6/21|c.394T>C|p.Phe132Leu|415/2589|394/2133|132/710||
+chr6	31939912	.	C	A	.	PASS	callers=FAKE;ANN=A|missense_variant|MODERATE|STK19|ENSG00000204344.10|transcript|ENST00000375331.2|protein_coding|1/8|c.139C>A|p.Gln47Lys|305/1663|139/1095|47/364||
+chr6	31959601	.	G	GT	.	PASS	callers=FAKE;ANN=GT|frameshift_variant&stop_gained|HIGH|C4A|ENSG00000244731.3|transcript|ENST00000428956.2|protein_coding|12/41|c.1434_1435insT|p.Asp479fs|1519/5460|1435/5235|479/1744||
+chr6	32118442	.	G	GAGT	.	PASS	callers=FAKE;ANN=GAGT|disruptive_inframe_insertion|MODERATE|PRRT1|ENSG00000204314.6|transcript|ENST00000211413.5|protein_coding|2/4|c.260_261insACT|p.His87delinsGlnLeu|385/1909|260/921|87/306||

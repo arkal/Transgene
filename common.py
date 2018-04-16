@@ -73,6 +73,8 @@ def chrom_sort(in_chroms):
     :return: Sorted chromosomes
     :rtype: list[str]
     """
+    if not in_chroms:
+        return in_chroms
     chr_prefix = False
     if in_chroms[0].startswith('chr'):
         in_chroms = [x.lstrip('chr') for x in in_chroms]
@@ -110,7 +112,13 @@ class GTFRecord(object):
         for feature in self.attribute.split(';'):
             try:
                 attr, value = feature.split()
-                setattr(self, attr, value.replace('"', ''))
+                if attr in self.__dict__:
+                    if isinstance(getattr(self, attr), list):
+                        setattr(self, attr, getattr(self, attr) + [value.replace('"', '')])
+                    else:
+                        setattr(self, attr, [getattr(self, attr), value.replace('"', '')])
+                else:
+                    setattr(self, attr, value.replace('"', ''))
             except ValueError:
                 pass
 
@@ -193,6 +201,15 @@ base3 = 'TCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAGTCAG'
 genetic_code = {''.join([b1, b2, b3]): aa
                 for aa, b1, b2, b3 in zip(amino, base1, base2, base3)}
 
+EFF = collections.namedtuple('EFF',
+                             'annotation, '  # The annotation of the event
+                             'codon_change, '  # A tuple of the changed nucleotide in the codon
+                             'aa_change, '
+                             'gene_name, '
+                             'transcript_id, '
+                             'transcript_len, '
+                             'warnings'
+                             )
 
 BEDPE = collections.namedtuple('BEDPE',
                                'chrom1, start1, end1, '
@@ -203,8 +220,44 @@ BEDPE = collections.namedtuple('BEDPE',
                                'junctionSeq1, junctionSeq2, '
                                'hugo1, hugo2')
 
+# A dictionary to translate used legacy snpeff annotations to sequence ontology
+snpeff_to_so = {'NON_SYNONYMOUS_CODING': 'missense_variant',
+                'STOP_GAINED': 'stop_gained',
+                'SYNONYMOUS_CODING': 'synonymous_variant',
+                'FRAME_SHIFT': 'frameshift_variant',
+                'CODON_CHANGE_PLUS_CODON_DELETION': 'disruptive_inframe_deletion',
+                'CODON_CHANGE_PLUS_CODON_INSERTION': 'disruptive_inframe_insertion',
+                'CODON_DELETION': 'inframe_deletion',
+                'CODON_INSERTION': 'inframe_insertion',
+                }
 
-def get_exons(genome_file, annotation_file, genes_of_interest):
+
+amino_letter = {'Ala': 'A',
+                'Arg': 'R',
+                'Asn': 'N',
+                'Asp': 'D',
+                'Cys': 'C',
+                'Glu': 'E',
+                'Gln': 'Q',
+                'Gly': 'G',
+                'His': 'H',
+                'Ile': 'I',
+                'Leu': 'L',
+                'Lys': 'K',
+                'Met': 'M',
+                'Phe': 'F',
+                'Pro': 'P',
+                'Ser': 'S',
+                'Thr': 'T',
+                'Trp': 'W',
+                'Tyr': 'Y',
+                'Val': 'V',
+                'Ter': '*',
+                '*': '*'
+                }
+
+
+def get_exons(genome_file, annotation_file, genes_of_interest, drop_transcript_version=False):
     """
     Generates list of GTFRecord objects for each transcript and the position of the start codon
     in a separate dict
@@ -212,6 +265,7 @@ def get_exons(genome_file, annotation_file, genes_of_interest):
     :param file genome_file: Reference genome FASTA file
     :param file annotation_file: Genome annotation file (GTF)
     :param set(str) genes_of_interest: The genes in this sample that might need translation.
+    :param bool drop_transcript_version: Drop the version part of transcript ids.
     :return: list GTFRecord of exons for each transcript, metadata for each transcript
     :rtype: dict(str, list(GTFRecord)), dict(str, int|bool)
     """
@@ -228,10 +282,16 @@ def get_exons(genome_file, annotation_file, genes_of_interest):
         else:
             gtf = GTFRecord(line)
             if gtf.feature == 'exon' and gtf.gene_name in genes_of_interest:
+                transcript_id = gtf.transcript_id
+                if drop_transcript_version:
+                    transcript_id = transcript_id.split('.')[0]
                 gtf.sequence = chroms[gtf.seqname][gtf.start - 1: gtf.end]
-                exons[gtf.transcript_id].append(gtf)
+                exons[transcript_id].append(gtf)
             elif gtf.feature == 'start_codon' and gtf.gene_name in genes_of_interest:
-                cds_starts[gtf.transcript_id] = gtf.start
+                transcript_id = gtf.transcript_id
+                if drop_transcript_version:
+                    transcript_id = transcript_id.split('.')[0]
+                cds_starts[transcript_id] = gtf.start
     return exons, cds_starts
 
 
@@ -331,3 +391,309 @@ def file_type(filename):
         return gzip.GzipFile(filename, 'r')
     else:
         return open(filename, 'r')
+
+
+def get_snpeff_3_6_changes(eff):
+    """
+    Get the changes for the call from a snpEff 3.6 annotated vcf.
+
+    :param str eff: The EFF field in the INFO column
+    :return: The Effects of the mutation on the given protein
+    :rtype: list(EFF)
+    """
+    out_effs = []
+    eff = re.sub('EFF=', '', eff)
+    for e in eff.split(','):
+        if 'protein_coding' in e:
+            if e.startswith(('NON_SYNONYMOUS_CODING', 'SYNONYMOUS_CODING', 'STOP_GAINED')):
+                e = e.strip().split('|')
+                out_effs.append(EFF(annotation=snpeff_to_so[e[0].split('(')[0]],
+                                    codon_change=e[2],
+                                    aa_change=e[3],
+                                    gene_name=e[5],
+                                    transcript_id=e[8],
+                                    transcript_len=e[4],
+                                    warnings=e[-1].rstrip(')') if len(e) == 12 else ''))
+            elif e.startswith(('CODON', 'FRAME')):
+                e = e.strip().split('|')
+                out_effs.append(EFF(annotation=snpeff_to_so[e[0].split('(')[0]],
+                                    codon_change='',
+                                    aa_change=e[3],
+                                    gene_name=e[5],
+                                    transcript_id=e[8],
+                                    transcript_len=e[4],
+                                    warnings=e[-1].rstrip(')') if len(e) == 12 else ''))
+    return out_effs
+
+
+def get_snpeff_4_0_changes(eff):
+    """
+    Get the changes for the call from a snpEff 4.0 annotated vcf.
+
+    :param str eff: The EFF field in the INFO column
+    :return: The Effects of the mutation on the given protein
+    :rtype: list(EFF)
+    """
+    out_effs = []
+    eff = re.sub('EFF=', '', eff)
+    for e in eff.split(','):
+        if 'protein_coding' in e:
+            if e.startswith(('missense_variant', 'synonymous_variant', 'stop_gained')):
+                e = e.strip().split('|')
+                out_effs.append(EFF(annotation=e[0].split('(')[0],
+                                    codon_change=e[2],
+                                    aa_change=translate_aa_change_4_0(e[3]),
+                                    gene_name=e[5],
+                                    transcript_id=e[8],
+                                    transcript_len=e[4],
+                                    warnings=e[-1].rstrip(')') if len(e) == 12 else ''))
+            elif e.startswith(('frame', 'inframe', 'disruptive')):
+                e = e.strip().split('|')
+                # Sinve SNPEff 4.0 does things differently, we will handle all indels similarly to
+                # frameshifts (otherwise we will predict the wrong things based on the annotation.
+                # The only downside to this is that we will predict excessively long peptides if the
+                # user specified --indel_extend_length > n
+                aa_change = list(translate_aa_change_4_0(e[3]))
+                while True:
+                    temp = aa_change.pop()
+                    if temp.isdigit():
+                        aa_change.append(temp + '?')
+                        aa_change = ''.join(aa_change)
+                        break
+                annotation = 'frameshift_variant'
+                out_effs.append(EFF(annotation=annotation,
+                                    codon_change='',
+                                    aa_change=aa_change,
+                                    gene_name=e[5],
+                                    transcript_id=e[8],
+                                    transcript_len=e[4],
+                                    warnings=e[-1].rstrip(')') if len(e) == 12 else ''))
+    return out_effs
+
+
+def translate_aa_change_4_0(aa_change_field):
+    """
+    Translate an amino acid change in snpeff 4.0 to 3.6 form.
+
+    :param str aa_change_field: The field containing the aa change
+    :return: The changed amino acid(s) in the for <REF><POS><ALT>
+    :rtype: str
+
+    >>> translate_aa_change_4_0('p.Gly144_Cys145del/c.431_433delGCT')
+    'GC144'
+    >>> translate_aa_change_4_0('p.Asp479_Ser480fs')
+    'DS479?'
+    >>> translate_aa_change_4_0('p.His87_Ala88insGlnLeu')
+    'HA87QL'
+    >>> translate_aa_change_4_0('p.Gly100Arg')
+    'G100R'
+    >>> translate_aa_change_4_0('p.Trp102fs')
+    'W102?'
+    >>> translate_aa_change_4_0('p.Tyr17*')
+    'Y17*'
+    """
+    if '/' in aa_change_field:
+        aa_change_field = aa_change_field.split('/')[0]
+
+    aa_change_field = aa_change_field[2:]  # remove the leading "p."
+
+    if any(x in aa_change_field for x in ['ins', 'del', 'fs']):
+        # Indel
+        aa_change_field = aa_change_field.split('_')
+
+        # handle the last one first, then move towards the first
+        prefix, aa_change_field[-1] = amino_letter[aa_change_field[-1][:3]], aa_change_field[-1][3:]
+        pos = aa_change_field[-1].translate(None, string.letters)
+        aa_change_field[-1] = aa_change_field[-1].translate(None, string.digits)
+
+        if aa_change_field[-1] == 'fs':
+            suffix = '?'
+        else:
+            suffix = ''.join([amino_letter[aa_change_field[-1][x:x + 3]]
+                              for x in range(0, len(aa_change_field[-1]), 3)
+                              if aa_change_field[-1][x:x + 3] not in ['del', 'ins']])
+
+        aa_change_field.pop()
+        for change in aa_change_field:
+            prefix = amino_letter[change[:3]] + prefix
+            pos = change[3:]
+    else:
+        prefix, aa_change_field = amino_letter[aa_change_field[:3]], aa_change_field[3:]
+        if aa_change_field.endswith('*'):
+            pos, suffix = aa_change_field[:-1], '*'
+        else:
+            pos, suffix = aa_change_field[:-3], amino_letter[aa_change_field[-3:]]
+
+    return prefix + pos + suffix
+
+
+def get_snpeff_4_x_changes(eff):
+    """
+    Get the changes for the call from a snpEff 4.1+ annotated vcf.
+
+    :param str eff: The ANN field in the INFO column
+    :return: The Effects of the mutation on the given protein
+    :rtype: list(EFF)
+    """
+    out_effs = []
+    eff = re.sub('ANN=', '', eff)
+    for e in eff.split(','):
+        if 'protein_coding' in e:
+            e = e.strip().split('|')
+            if e[1] in ('missense_variant', 'synonymous_variant', 'stop_gained'):
+                out_effs.append(EFF(annotation=e[1],
+                                    codon_change=e[9],
+                                    aa_change=translate_aa_change_4_x(e[10]),
+                                    gene_name=e[3],
+                                    transcript_id=e[6],
+                                    transcript_len=e[13].split('/')[1],
+                                    warnings=e[-1].rstrip(')') if len(e) == 16 else ''))
+            elif any(x in e[1] for x in ('frame', 'inframe', 'disruptive')):
+                out_effs.append(EFF(annotation=e[1],
+                                    codon_change=e[9],
+                                    aa_change=translate_aa_change_4_x(e[10]),
+                                    gene_name=e[3],
+                                    transcript_id=e[6],
+                                    transcript_len=e[13].split('/')[1],
+                                    warnings=e[-1].rstrip(')') if len(e) == 16 else ''))
+    return out_effs
+
+
+def translate_aa_change_4_x(aa_change_field):
+    """
+    Translate an amino acid change in snpeff 4.1+ to 3.6 form.
+
+    :param str aa_change_field: The field containing the aa change
+    :return: The changed amino acid(s) in the for <REF><POS><ALT>
+    :rtype: str
+
+    >>> translate_aa_change_4_x('p.Gly144_Cys145del/c.431_433delGCT')
+    'GC144'
+    >>> translate_aa_change_4_x('p.Asp479_Ser480fs')
+    'DS479?'
+    >>> translate_aa_change_4_x('p.His87_Ala88insGlnLeu')
+    'A88QLA'
+    >>> translate_aa_change_4_x('p.Gly100Arg')
+    'G100R'
+    >>> translate_aa_change_4_x('p.Trp102fs')
+    'W102?'
+    >>> translate_aa_change_4_x('p.Tyr17*')
+    'Y17*'
+    >>> translate_aa_change_4_x('p.Tyr174_Arg175delinsTrp')
+    'YR174W'
+    >>> translate_aa_change_4_x('p.Arg175delinsTrpLeu')
+    'R175WL'
+    """
+    if '/' in aa_change_field:
+        aa_change_field = aa_change_field.split('/')[0]
+
+    aa_change_field = aa_change_field[2:]  # remove the leading "p."
+
+    if any(x in aa_change_field for x in ['ins', 'del', 'fs']):
+        # Indel
+        aa_change_field = aa_change_field.split('_')
+
+        # handle the last one first, then move towards the first
+        prefix, aa_change_field[-1] = amino_letter[aa_change_field[-1][:3]], aa_change_field[-1][3:]
+        pos = aa_change_field[-1].translate(None, string.letters)
+        aa_change_field[-1] = aa_change_field[-1].translate(None, string.digits)
+
+        if aa_change_field[-1] == 'fs':
+            suffix = '?'
+        else:
+            suffix = ''
+            if aa_change_field[-1].startswith('delins'):
+                aa_change_field[-1] = aa_change_field[-1][6:]  # Strip "delins"
+            elif aa_change_field[-1] == 'del':
+                aa_change_field[-1] = ''  # Strip "del"
+            else:
+                assert aa_change_field[-1].startswith('ins')
+                aa_change_field = [aa_change_field[-1][3:]]  # Strip "ins"
+                suffix = prefix  # Make it so the results will be C>ABC
+            suffix = ''.join([amino_letter[aa_change_field[-1][x:x + 3]]
+                              for x in range(0, len(aa_change_field[-1]), 3)]) + suffix
+        aa_change_field.pop()
+        for change in aa_change_field:
+            prefix = amino_letter[change[:3]] + prefix
+            pos = change[3:]
+    else:
+        prefix, aa_change_field = amino_letter[aa_change_field[:3]], aa_change_field[3:]
+        if aa_change_field.endswith('*'):
+            pos, suffix = aa_change_field[:-1], '*'
+        else:
+            pos, suffix = aa_change_field[:-3], amino_letter[aa_change_field[-3:]]
+
+    return prefix + pos + suffix
+
+
+def get_vep_changes(eff):
+    """
+    Get the changes for the call from a VEP annotated vcf.
+
+    :param str eff: The CSQ field in the INFO column
+    :return: The Effects of the mutation on the given protein
+    :rtype: list(EFF)
+    """
+    out_effs = []
+    eff = re.sub('ANN=', '', eff)
+    for e in eff.split(','):
+        if 'protein_coding' in e:
+            e = e.strip().split('|')
+            if e[1] in ('missense_variant', 'synonymous_variant', 'stop_gained'):
+                out_effs.append(EFF(annotation=e[1],
+                                    codon_change=e[16],
+                                    aa_change=translate_aa_change_vep(e[14], e[15]),
+                                    gene_name=e[3],
+                                    transcript_id=e[6],
+                                    transcript_len=-1,
+                                    warnings=''))
+            elif any(x in e[1] for x in ('frame', 'inframe', 'protein_altering')):
+                out_effs.append(EFF(annotation=e[1],
+                                    codon_change=e[16],
+                                    aa_change=translate_aa_change_vep(e[14], e[15]),
+                                    gene_name=e[3],
+                                    transcript_id=e[6],
+                                    transcript_len=-1,
+                                    warnings=''))
+    return out_effs
+
+
+def translate_aa_change_vep(pos_field, aa_change_field):
+    """
+    Translate an amino acid change in snpeff 4.1+ to 3.6 form.
+
+    :param str aa_change_field: The field containing the aa change
+    :return: The changed amino acid(s) in the for <REF><POS><ALT>
+    :rtype: str
+
+    >>> translate_aa_change_vep('144-145', 'GC/-')
+    'GC144'
+    >>> translate_aa_change_vep('479-480', 'DS/X')
+    'DS479?'
+    >>> translate_aa_change_vep('87-88', '-/QL')
+    '-87QL'
+    >>> translate_aa_change_vep('100', 'G/R')
+    'G100R'
+    >>> translate_aa_change_vep('102-103', 'W/X')
+    'W102?'
+    >>> translate_aa_change_vep('17', 'Y/*')
+    'Y17*'
+    >>> translate_aa_change_vep('174', 'YR/W')
+    'YR174W'
+    >>> translate_aa_change_vep('175', 'R/WL')
+    'R175WL'
+    >>> translate_aa_change_vep('175', 'R')
+    'R175R'
+    """
+    aa_change_field = aa_change_field.split('/')
+    if len(aa_change_field) == 1:
+        # Synonymous mutation
+        aa_change_field = aa_change_field + aa_change_field
+
+    pos_field = pos_field.split('/')[0].split('-')[0]
+    if aa_change_field[1].endswith('X'):
+        aa_change_field[1] = '?'
+    elif aa_change_field[1] == '-':
+        aa_change_field[1] = ''
+    prefix, pos, suffix = aa_change_field[0], pos_field, aa_change_field[1]
+    return prefix + pos + suffix
