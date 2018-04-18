@@ -22,13 +22,14 @@ from __future__ import print_function
 
 import argparse
 import logging
-import unittest
-import shutil
 import os
+import shutil
 import tempfile
-import transgene
-from common import file_type, get_exons, read_fasta
-from indel import get_codon, get_exon_start_pos
+import unittest
+
+from transgene.core import main as transgene_main
+from transgene.common import file_type, get_exons, read_fasta
+from transgene.indel import get_codon, get_exon_start_pos
 
 log = logging.getLogger(__name__)
 
@@ -157,7 +158,7 @@ class TransgeneTest(unittest.TestCase):
 
         params.cores = 1
         try:
-            transgene.main(params)
+            transgene_main(params)
         except RuntimeError as e:
             if self.annotator == '4.3' and genome is False:
                 self.assertTrue(e.message == 'Cannot handle SNPEff4.3 annotated vcfs without a '
@@ -549,7 +550,7 @@ class TransgeneTest(unittest.TestCase):
             for kmer in self.output_fastas.keys():
                 observed_fasta = self.output_fastas[kmer][ttype]
                 observed_seqs = set()
-                for header, _, seq in transgene.read_fasta(open(observed_fasta, 'r'), alpha):
+                for header, _, seq in core.read_fasta(open(observed_fasta, 'r'), alpha):
                     observed_seqs.add(seq)
                 if observed_seqs != expected_peptides[kmer][ttype]:
                     if observed_seqs - expected_peptides[kmer][ttype]:
@@ -570,7 +571,7 @@ class TransgeneTest(unittest.TestCase):
                 ('B132*', ['B', 132, '*'])
                 ]
         for string, parsed_string in want:
-            get = transgene.get_ref_pos_alt_aa(string)
+            get = core.get_ref_pos_alt_aa(string)
             self.assertListEqual(parsed_string, get)
 
     def test_get_exon_start_pos(self):

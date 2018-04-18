@@ -2,7 +2,7 @@ import collections
 import logging
 
 import pysam
-from common import reject_decision
+from transgene.common import reject_decision
 
 
 def reject_snv(snv, rna_bam=None, reject_threshold=None, rna_min_alt_freq=None, dna_bam=None,

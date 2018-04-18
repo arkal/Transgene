@@ -2,7 +2,7 @@ from __future__ import print_function
 
 import sys
 
-from setuptools import setup
+from setuptools import find_packages, setup
 from setuptools.command.test import test as TestCommand
 from version import version
 
@@ -30,6 +30,8 @@ class PyTest(TestCommand):
 
 setup(name='transgene',
       version=version,
+      package_dir={'': 'src'},
+      packages=find_packages('src', exclude=['*.test']),
       description='Translation of genomic events to proteomic space',
       url='http://github.com/arkal/transgene',
       author='Arjun Arkal Rao',
@@ -44,6 +46,6 @@ setup(name='transgene',
       test_suite='transgene',
       entry_points={
           'console_scripts': [
-              'transgene = transgene:run_transgene']},
+              'transgene = transgene.core:run_transgene']},
       cmdclass={'test': PyTest},
       zip_safe=False)

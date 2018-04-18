@@ -8,7 +8,7 @@ import re
 from cStringIO import StringIO
 
 import swalign
-from common import read_fasta, trans, BEDPE, translate
+from transgene.common import read_fasta, trans, BEDPE, translate
 
 
 def get_transcriptome_data(infile, drop_transcript_version=False):

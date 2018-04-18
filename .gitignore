@@ -6,3 +6,4 @@ nosetests.xml
 /venv/
 .cache
 __pycache__
+/dist/

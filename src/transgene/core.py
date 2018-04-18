@@ -26,23 +26,23 @@ from operator import itemgetter
 from tempfile import mkstemp
 
 import pysam
-from common import (chrom_sort,
-                    first_mismatch,
-                    file_type,
-                    genetic_code,
-                    get_exons,
-                    get_snpeff_3_6_changes,
-                    get_snpeff_4_0_changes,
-                    get_snpeff_4_x_changes,
-                    get_vep_changes,
-                    read_fasta,
-                    read_genes_from_gtf,
-                    reject_decision,
-                    trans,
-                    translate)
-from fusion import get_transcriptome_data, insert_fusions, read_fusions
-from indel import get_codon, get_exon_start_pos, reject_indel
-from snv import reject_snv
+from transgene.common import (chrom_sort,
+                              first_mismatch,
+                              file_type,
+                              genetic_code,
+                              get_exons,
+                              get_snpeff_3_6_changes,
+                              get_snpeff_4_0_changes,
+                              get_snpeff_4_x_changes,
+                              get_vep_changes,
+                              read_fasta,
+                              read_genes_from_gtf,
+                              reject_decision,
+                              trans,
+                              translate)
+from transgene.fusion import get_transcriptome_data, insert_fusions, read_fusions
+from transgene.indel import get_codon, get_exon_start_pos, reject_indel
+from transgene.snv import reject_snv
 
 
 def reject_mutation(call, rna_bam=None, reject_threshold=None, rna_min_alt_freq=None, dna_bam=None,

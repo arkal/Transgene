@@ -1,7 +1,7 @@
 import logging
 
 import pysam
-from common import reject_decision, trans
+from transgene.common import reject_decision, trans
 
 
 def reject_indel(indel, rna_bam=None, reject_threshold=None, rna_min_alt_freq=None):
