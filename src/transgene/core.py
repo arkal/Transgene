@@ -794,7 +794,7 @@ def correct_for_same_codon(snvs, mut_group):
                 logging.info('Merged (%s) into %s.', muts, merged_group)
                 # Now add this to the mutations dict
                 snvs[merged_group] = {'AA': {'REF': merged_group[0],
-                                             'ALT': merged_group[1],
+                                             'ALT': merged_group[-1],
                                              'POS': pos,
                                              'VAF': min([snvs[x]['AA']['VAF'] for x in mut_group])},
                                       'indel': False}
