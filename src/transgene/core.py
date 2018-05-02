@@ -439,6 +439,7 @@ def parse_vcf_line(worker_id, queue, indexes, out_calls, annotator,
                     ref_aa, pos, alt_aa = get_ref_pos_alt_aa(eff[i].aa_change)
                     if not alt_aa or alt_aa.endswith('?'):
                         if indel:
+                            # Only possible case for alt_aa to be '?'
                             if 'frameshift_variant' in eff[i].annotation:
                                 if len(line['REF']) > len(line['ALT']):
                                     # Frame shift arising from a deletion. Either a full in-frame
@@ -448,17 +449,17 @@ def parse_vcf_line(worker_id, queue, indexes, out_calls, annotator,
                                     indel = 'frame_shift_insertion'
                             else:
                                 indel = 'full_codon_deleltion'
-                        elif alt_aa.endswith('?'):
-                            if ref_aa == '?' and eff[i].warnings == 'WARNING_TRANSCRIPT_INCOMPLETE':
-                                logging.debug('Cannot handle mutation (%s:%s) in a truncated '
-                                              'gencode protein (%s) sequence', line['CHROM'],
-                                              line['POS'], eff[i].transcript_id)
+                        else:
+                            assert not alt_aa.endswith('?'), '? seen in an SNV for the ALT AA'
+                            if ref_aa == '?':
+                                logging.warning('Cannot handle mutation (%s:%s) in gencode protein '
+                                                '(%s) sequence. Annotator warnings were (%s)',
+                                                line['CHROM'], line['POS'], eff[i].transcript_id,
+                                                eff[i].warnings)
                                 continue
                             else:
-                                assert False, '? seen in an SNV for the ALT AA'
-                        else:
-                            # Synonymous change
-                            alt_aa = ref_aa
+                                # Synonymous change
+                                alt_aa = ref_aa
                     # At this point, indel is False, frame_shift_X, full_codon_deletion, or True.
                     # True implies it is a full codon insertion or a codon insertion with codon
                     # change.
