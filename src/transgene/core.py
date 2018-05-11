@@ -948,9 +948,21 @@ def insert_mutations(protein_fa, mutations, tumfile, normfile, peplen, rna_bam=N
                         else:
                             # Frame shift mutation.
                             group_mut_pos = group_muts.index(group_mut)
-                            aa_seq = get_genomic_seq(pept, group_muts[group_mut_pos:],
-                                                     peptide_muts[pept], chroms, exons, cds_starts,
-                                                     extend_length)
+                            try:
+                                aa_seq = get_genomic_seq(pept, group_muts[group_mut_pos:],
+                                                         peptide_muts[pept], chroms, exons,
+                                                         cds_starts, extend_length)
+                            except IndexError as e:
+                                if e.message == 'pop from empty list':
+                                    # This occurs if a deletion on the negative strand spans across
+                                    # the boundary.
+                                    skip = True
+                                    logging.warning('One of %s in %s spans an exon boundary '
+                                                    'leading to unknown splicing. Cannot process.',
+                                                    ','.join(group_muts[group_mut_pos:]), pept)
+                                    break
+                                else:
+                                    raise
                             if aa_seq is None:
                                 # aa_seq will be a string of characters for a frameshift mutant
                                 # and None if it was a frameshift mutant in a gene that
