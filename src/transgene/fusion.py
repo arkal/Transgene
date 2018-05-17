@@ -121,7 +121,7 @@ def read_fusions(fusion_file, gene_annotations, filter_mt, filter_ig, filter_rg,
         except TypeError:
             raise ValueError("ERROR: fusion file is malformed.\n{}".format(read_fusions.__doc__))
 
-        if filter_mt and 'M' in record.chrom1 or 'M' in record.chrom2:
+        if filter_mt and ('M' in record.chrom1 or 'M' in record.chrom2):
             logging.warning("Rejecting %s-%s for containing a Mitochondrial gene.", record.hugo1,
                             record.hugo2)
             continue
