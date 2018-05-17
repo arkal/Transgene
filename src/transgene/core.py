@@ -948,9 +948,21 @@ def insert_mutations(protein_fa, mutations, tumfile, normfile, peplen, rna_bam=N
                         else:
                             # Frame shift mutation.
                             group_mut_pos = group_muts.index(group_mut)
-                            aa_seq = get_genomic_seq(pept, group_muts[group_mut_pos:],
-                                                     peptide_muts[pept], chroms, exons, cds_starts,
-                                                     extend_length)
+                            try:
+                                aa_seq = get_genomic_seq(pept, group_muts[group_mut_pos:],
+                                                         peptide_muts[pept], chroms, exons,
+                                                         cds_starts, extend_length)
+                            except IndexError as e:
+                                if e.message == 'pop from empty list':
+                                    # This occurs if a deletion on the negative strand spans across
+                                    # the boundary.
+                                    skip = True
+                                    logging.warning('One of %s in %s spans an exon boundary '
+                                                    'leading to unknown splicing. Cannot process.',
+                                                    ','.join(group_muts[group_mut_pos:]), pept)
+                                    break
+                                else:
+                                    raise
                             if aa_seq is None:
                                 # aa_seq will be a string of characters for a frameshift mutant
                                 # and None if it was a frameshift mutant in a gene that
@@ -981,25 +993,44 @@ def insert_mutations(protein_fa, mutations, tumfile, normfile, peplen, rna_bam=N
                     out_pept['tum_seq'].extend(protein[prev:prev + peplen - 1])
                     out_pept['norm_seq'].extend(protein[prev:prev + peplen - 1])
                 if peptide_muts[pept]['has_indel']:
-                    # Handle left side of the IAR
-                    fm = first_mismatch(out_pept['tum_seq'], out_pept['norm_seq'])
-                    if fm >= peplen:
-                        for _ in range(peplen - 1, fm):
-                            out_pept['tum_seq'].pop(0)
-                            out_pept['norm_seq'].pop(0)
-                    elif fm == -1:
-                        # This will happen if they are the same sequence after translating. Discard
-                        # This sequence
+                    # Trim the peptide from either side if the tumor and normal have at least peplen
+                    # similar sequences on either end. E.g.
+                    #   6-mers in p.AYQN10A in TPGTGSLAA AYQN YVETAS
+                    #   Normal IAR:                GSLAA AYQN YVETA  =>  GSLAAAY QNYVETA
+                    #   Tumor IAR:                 GSLAA A    YVETA  =>  GSLAAAY VETA
+                    # Since Y was teh first AA after the deletion and the first AA in the deletion,
+                    # the deletion looks like it is actually p.YNQ11Y. The 7 AAs on the LHS of the
+                    # T/N peptides is the same and we are interested in 6-mers hence we trim the
+                    # peptides by 2 AA on the left so the first mismatch is at position 6.
+                    #   Normal IAR:  LAAAY QNYVETA
+                    #   Tumor IAR:   LAAAY VETA
+                    # Similarly, they can also be similar on the RHS.
+                    # Also when we do a direct substitute on an indel (i.e. using what the annotater
+                    # says is happening), there is the chance that one peptide will be contained
+                    # within the other. we discard these cases as havign no neoepitopes
+
+                    # The first mismatch on either side cannot logically overlap. They can at best
+                    # be the same residue and only one side will be trimmed in that case.
+                    fml = first_mismatch(out_pept['tum_seq'], out_pept['norm_seq'])
+                    fmr = first_mismatch(out_pept['tum_seq'][::-1], out_pept['norm_seq'][::-1])
+
+                    if -1 in (fml, fmr):
+                        # This will happen if they are the same sequence. Discard this sequence
                         logging.warning('IAR in (%s) is exactly the same as its normal counterpart '
                                         '(T: %s, N: %s). Skipping.', out_pept['pept_name'],
                                         ''.join(out_pept['tum_seq']), ''.join(out_pept['norm_seq']))
                         continue
-                    # Handle right side of the IAR
-                    fm = first_mismatch(out_pept['tum_seq'][::-1], out_pept['norm_seq'][::-1])
-                    if fm >= peplen:
-                        for _ in range(peplen - 1, fm):
+                    if fml >= peplen:
+                        # pop items from the beginning of the lists for the LHS
+                        for _ in range(peplen - 1, fml):
+                            out_pept['tum_seq'].pop(0)
+                            out_pept['norm_seq'].pop(0)
+                    if fmr >= peplen:
+                        # pop items from the end of the lists for the RHS
+                        for _ in range(peplen - 1, fmr):
                             out_pept['tum_seq'].pop()
                             out_pept['norm_seq'].pop()
+
                 write_pepts_to_file(out_pept, tumfile, normfile, peplen)
     return None
 
