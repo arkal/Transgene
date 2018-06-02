@@ -246,103 +246,271 @@ def scan_frame(reference_start):
     return in_frame_adjustment
 
 
-def get_donor_junction_exon(breakpoint, exons):
+def get_donor_junction_exon(breakpoint, exons, cds_start, peplen):
     """
     Finds the first exon before the fusion breakpoint
 
-    :param str transcript_id: donor Ensembl transcript ID
     :param int breakpoint: Genomic position of donor breakpoint
-    :param list exons: Sorted list of GTFRecord objects keyed
-    :return: Donor junction sequence
-    :rtype: str
+    :param list exons: Sorted list of exons for the current transcript as GTFRecord objects
+    :param int cds_start: The CDS start for the transcript
+    :param int peplen: The length of peptides that will be estimated from this IAR.
+    :return: In-frame donor junction sequence with (n-1)*3 + overhang nucleotides (for n-1 normal
+             AAs and < 3 bp that will make the first modifed AA, and a flag indicating that the
+             breakpoint was in an intron.
+    :rtype: str, bool
     """
-
-    # Donor
-    # We want the first exon that is upstream of the breakpoint
-    #            exon.start < breakpoint        exon.start < breakpoint < exon.end
-    #            exon.end  <= breakpoint
-    #          _________     |      ___________           ______|_____
-    # -->--->--|___1____|----|-----|__________|-----------|_____|_____|--------
-    #                        |                                  |
-    #                                                                       Traverse <--
-
+    sequence = []
+    intron_junction = True
     if exons[0].strand == '+':
-        for exon in exons[::-1]:
-            if exon.start < breakpoint and exon.end <= breakpoint:
-                return exon.sequence
+        if breakpoint < cds_start:
+            logging.warning('Predicted breakpoint %s is in in the 5\' UTR of %s. Skipping',
+                            breakpoint, exons[0].transcript_id)
+            return None, None
+        for i, exon in enumerate(exons):
+            if breakpoint < exon.start:
+                # The breakpoint was in the previous intron
+                if breakpoint <= exons[i - 1].end + 23:
+                    logging.warning('Breakpoint within 23bp of exon end. Splicing may be affected.')
+                break
+            if cds_start > exon.end:
+                # This handles an exon of just 5' UTR
+                continue
+            start = max(0, cds_start - exon.start)
+            end = exon.end - exon.start if breakpoint > exon.end else breakpoint - exon.start
+            sequence.append(exon.sequence[start:end + 1])
+            if exon.start <= breakpoint <= exon.end:
+                intron_junction = False
+                break
+    else:
+        if breakpoint > cds_start:
+            logging.debug('Predicted breakpoint in the 5\' UTR. Skipping')
+            return None, None
+        for i, exon in enumerate(exons):
+            if breakpoint > exon.end:
+                # The breakpoint was in the previous intron
+                if breakpoint >= exons[i - 1].start - 23:
+                    logging.warning('Breakpoint within 23bp of exon end. Splicing may be affected.')
+                break
+            if cds_start < exon.start:
+                # This handles an exon of just 5' UTR
+                continue
+            start = 0 if breakpoint < exon.start else breakpoint - exon.start
+            end = min(cds_start + 2, exon.end) - exon.start
+            sequence.append(exon.sequence[start:end + 1][::-1].translate(trans))
+            if exon.start <= breakpoint <= exon.end:
+                intron_junction = False
+                break
+    sequence = ''.join(sequence)
+    overhang = len(sequence) % 3
+    if overhang == 0:
+        return sequence[-(peplen - 1) * 3:], intron_junction
+    else:
+        return sequence[-((peplen - 1) * 3 + overhang):], intron_junction
 
-            elif exon.start < breakpoint < exon.end:
-                # Gencode and breakpoint annotations are one-based
-                return exon.sequence[: breakpoint - exon.start]
 
-
-    # Donor
-    # Want first exon that is downstream of breakpoint
-    # exon.start < breakpoint < exon.end                  exon.start >= breakpoint
-    #                                                     exon.end > breakpoint
-    #          ____|_____          ___________      |      ___________
-    # --<---<--|___|____|---------|__________|------|-----|_____1_____|--------
-    #              |                                |
-    # Traverse -->
-
-    elif exons[0].strand == '-':
-        for exon in exons[::-1]:
-            if exon.start >= breakpoint and exon.end > breakpoint:
-                return exon.sequence.translate(trans)[::-1]
-
-            elif exon.start < breakpoint < exon.end:
-                seq = exon.sequence[breakpoint - exon.start:]
-                return seq.translate(trans)[::-1]
-
-
-def get_acceptor_junction(breakpoint, exons):
+def get_acceptor_junction(breakpoint, exons, cds_start, chrom_seq, peplen):
     """
     Finds the first exon after the fusion breakpoint
 
-    :param str transcript_id: donor Ensembl transcript ID
     :param int breakpoint: Genomic position of donor breakpoint
-    :param dict exons:
-    :return:
+    :param list exons: Sorted list of exons for the current transcripts as GTFRecord objects
+    :param int cds_start: The CDS start for the transcript
+    :param list chrom_seq: The sequence for the current chromosome
+    :param int peplen: The length of peptides that will be estimated from this IAR.
+    :return: An in-frame acceptor sequence of len 2 * peplen * 3 with a 5' overhang,
+             A genomic sequence of length 99(if breakpoint intronic else None,
+             and a flag indicating if the breakpoint was in an intron
+    :rtype: str, str|None, bool
     """
-
-    # Acceptor
-    # Want first exon downstream of breakpoint
-    #               exon.start >= breakpoint      exon.start < breakpoint < breakpoint
-    #               exon.end  > breakpoint
-    #          _________     |      ___________           ______|_____
-    # -->--->--|_______ |----|-----|_____x_____|----------|_____|_____|--------
-    #                        |                                  |
-    # Traverse -->
-
+    sequence = []
+    genomic_sequence = None
+    intron_junction = False
+    acceptor_exon_reached = False
+    skipped_nucs = 0
     if exons[0].strand == '+':
-        for exon in exons:
-            if exon.start >= breakpoint and exon.end > breakpoint:
-                return exon.sequence
+        #                 E1                        E2
+        #    -------|~~~~~=========|-----------|==========|----ETC
+        #                 C
+        # B1:          ^                                                  : Handled outside the fn
+        # B2:                 ^                                           : B < E1e
+        #                                                                   E1s < B < E1e
+        # B3:                            ^                                : B > E1e, B < E2e
+        #                                                                   B < E2s => INTRON
+        # B4:                                       ^                     : B > E1e, B < E2e
+        #                                                                   E2s < B < E2e
+        for i, exon in enumerate(exons):
+            if breakpoint > exon.end:
+                # Breakpoint is after this exon
+                if exon.start <= cds_start <= exon.end:
+                    skipped_nucs += exon.end - cds_start + 1
+                else:
+                    skipped_nucs += exon.end - exon.start + 1
+                continue
+            if not acceptor_exon_reached:
+                acceptor_exon_reached = True
+                if breakpoint < exon.start:
+                    intron_junction = True
+                    logging.info('Introninc breakpoint detected.')
+                    genomic_sequence = get_genomic_sequence(breakpoint, chrom_seq, 33,
+                                                            exon.strand)
+                    if breakpoint >= exon.start - 23:
+                        logging.warning('Breakpoint within 23bp of exon start. Splicing may be '
+                                        'affected.')
+                else:
+                    skipped_nucs += (breakpoint - exon.start)
+            start = breakpoint - exon.start if breakpoint >= exon.start else 0
+            sequence.append(exon.sequence[start:])
+    else:
+        #                       E2                     E1
+        #      CTE----------|=======|-----------|=======~~~~~|-------
+        #                                              C
+        # B1:                                             ^              : Handled outside the fn
+        # B2:                                     ^                      :  B > E1s
+        #                                                                       E1s < B < E1e
+        # B3:                             ^                              :  B < E1s, B > E2s
+        #                                                                       B > E2e => INTRON
+        # B4:                 ^                                          :  B < E1s, B > E2s
+        #                                                                       E2s < B < E2e
+        for i, exon in enumerate(exons):
+            if breakpoint < exon.start:
+                # Breakpoint is after this exon
+                if exon.start <= cds_start + 2 <= exon.end:
+                    skipped_nucs += cds_start + 2 - exon.start + 1
+                else:
+                    skipped_nucs += exon.end - exon.start + 1
+                continue
+            if not acceptor_exon_reached:
+                acceptor_exon_reached = True
+                if breakpoint > exon.end:
+                    intron_junction = True
+                    logging.info('Introninc breakpoint detected.')
+                    genomic_sequence = get_genomic_sequence(breakpoint, chrom_seq, 33,
+                                                            exon.strand)
+                    if breakpoint <= exon.end + 23:
+                        logging.warning('Breakpoint within 23bp of exon start. Splicing may be '
+                                        'affected.')
+                else:
+                    skipped_nucs += (exon.end - breakpoint)
+            end = breakpoint - exon.start + 1 if breakpoint <= exon.end else None
+            sequence.append(exon.sequence[:end][::-1].translate(trans))
+    sequence = ''.join(sequence)
 
-            elif exon.start < breakpoint < exon.end:
-                seq = exon.sequence[breakpoint - exon.start:]
-                return seq.translate(trans)[::-1]
-
-    # Acceptor
-    # Want first exon downstream of breakpoint
-    #               exon.start >= breakpoint      exon.start < breakpoint < breakpoint
-    #               exon.end  > breakpoint
-    #          _________     |      ___________           ______|_____
-    # --<---<--|_______ |----|-----|_____x_____|----------|_____|_____|--------
-    #                        |                                  |
-    #                                                                   <-- Traverse
-
-    elif exons[0].strand == '-':
-        for index, exon in enumerate(exons):
-            if exon.start < breakpoint and exon.end <= breakpoint:
-                return exon.sequence.translate(trans)[::-1]
-
-            elif exon.start < breakpoint < exon.end:
-                seq = exon.sequence[: breakpoint - exon.start]
-                return seq.translate(trans)[::-1]
+    if skipped_nucs % 3 == 0:
+        # The first base in the junction is in-frame on the acceptor. Return 2x peplen
+        sequence = sequence[:min(len(sequence), peplen * 3 * 2)]
+    else:
+        # The first base was not in-frame. Return 2x peplen + the overhang
+        sequence = sequence[:min(len(sequence),  3 - (skipped_nucs % 3) + peplen * 3 * 2)]
+    return sequence, genomic_sequence, intron_junction
 
 
-def insert_fusions(transcriptome, fusion_calls, gene_transcripts, peplen, outfile, exons=None, output_frameshift=False):
+def insert_fusions_from_junctions(transcriptome, call, gene_transcripts, peplen, outfile,
+                                  previous_alignments):
+    """
+    Generates fusion peptides for MHC binding prediction. If the junction sequence is not
+    provided for the donor and acceptor, a theoretical sequence is inferred using a
+    genome annotation file.
+
+    :param dict transcriptome: Dictionary of transcripts keyed by transcript ID
+    :param call: A single BEDPE fusion call
+    :param dict[list] gene_transcripts: Dictionary of transcript IDs keyed by gene ID
+    :param int peplen: Length of n-mer peptide
+    :param file outfile: File object to write n-mer peptides in FASTA format
+    :param dict previous_alignments: A dict of previous alignments from handling another read length
+    :returns: True if an epitope was fond else False
+    :rtype: bool
+    """
+    found = False
+    donor_name, acceptor_name = call.name.split('-')
+    logging.info('Processing using 5\' and 3\' junction sequences')
+    junction_seq1 = call.junctionSeq1
+
+    # Iterate over all possible transcripts for the donor gene
+    for donor_transcript_id in gene_transcripts[donor_name]:
+        # Find the frame in the donor sequence using a reference transcriptome
+        try:
+            donor_transcript = transcriptome[donor_transcript_id]
+
+            # Check if we have already aligned this sequence (ie for another peptide length)
+            try:
+                bounds = previous_alignments[(donor_transcript, junction_seq1)]
+
+            # If not, then align the sequence and save the alignment information
+            except KeyError:
+                bounds = align_filter(donor_transcript, junction_seq1, 'donor')
+                previous_alignments[(donor_transcript, junction_seq1)] = bounds
+
+            # Donor sequence may not align to some isoforms
+            if bounds is None:
+                logging.debug('Donor sequence did not align to reference transcripts')
+                continue
+
+        except KeyError:
+            continue
+
+        # Find the position of the transcript where the predicted donor sequence starts
+        in_frame_adjustment = scan_frame(bounds.rstart)
+        if in_frame_adjustment is None:
+            continue
+
+        # Slice the donor transcript such that the first base is in-frame
+        # May have an overhang base
+        donor_start = bounds.qstart + in_frame_adjustment
+        in_frame_donor_seq = junction_seq1[donor_start:]
+        # Now retain only 8 codons + overhang
+        overhang = len(in_frame_donor_seq) % 3
+        if overhang == 0:
+            in_frame_donor_seq = junction_seq1[-(peplen - 1) * 3:]
+        else:
+            in_frame_donor_seq = junction_seq1[-((peplen - 1) * 3 + overhang):]
+
+        donor_overhang = len(in_frame_donor_seq) % 3
+
+        if donor_overhang == 0:
+            acceptor_seq = call.junctionSeq2[:(peplen - 1) * 3]
+        else:
+            acceptor_seq = call.junctionSeq2[:3 - donor_overhang + (peplen - 1) * 3]
+
+        # Use the donor and acceptor sequences to generate the fusion transcript
+        junction_seq = [in_frame_donor_seq, acceptor_seq]
+
+        logging.debug('Inferred junction seq: %s %s', junction_seq[0], junction_seq[1])
+
+        fusion_peptide = translate(''.join(junction_seq))
+        logging.debug("Inferred fusion peptide: %s" % fusion_peptide)
+
+        if '*' in fusion_peptide:
+            fusion_peptide = fusion_peptide[:fusion_peptide.find('*')]
+
+        if len(fusion_peptide) < peplen:
+            logging.warning('Fusion peptide %s from %s-%s is is less than %s '
+                            'residues.', fusion_peptide, donor_name, acceptor_name, peplen)
+            continue
+
+        # Write fusion neoepitope sequence to FASTA file
+        fasta = '>{donor_gene}-{acceptor_gene}_' \
+                '{donor_transcript}-{acceptor_transcript}_' \
+                '{donor_hugo}-{acceptor_hugo}_' \
+                '{donor_breakpoint}-{acceptor_breakpoint}_' \
+                'FUSION_{score}\n' \
+                '{sequence}\n'.format(donor_gene=donor_name,
+                                      acceptor_gene=acceptor_name,
+                                      donor_transcript=donor_name,
+                                      acceptor_transcript=acceptor_name,
+                                      donor_hugo=call.hugo1,
+                                      acceptor_hugo=call.hugo2,
+                                      donor_breakpoint=call.end1,
+                                      acceptor_breakpoint=call.start2,
+                                      score=call.score,
+                                      sequence=fusion_peptide)
+        outfile.write(fasta)
+        found = True
+
+    return found
+
+
+def insert_fusions(transcriptome, fusion_calls, gene_transcripts, peplen, outfile, chroms=None,
+                   exons=None, cds_starts=None, extend_length=10):
     """
     Generates fusion peptides for MHC binding prediction. If the junction sequence is not
     provided for the donor and acceptor, a theoretical sequence is inferred using a
@@ -353,8 +521,11 @@ def insert_fusions(transcriptome, fusion_calls, gene_transcripts, peplen, outfil
     :param dict[list] gene_transcripts: Dictionary of transcript IDs keyed by gene ID
     :param int peplen: Length of n-mer peptide
     :param file outfile: File object to write n-mer peptides in FASTA format
-    :param bool output_frameshift: Output peptides that result from a frameshift in the acceptor sequence
-    :param dict exons: Dictionary mapping transcript IDs to ordered list of GTFRecord objects
+    :param dict chroms: Contains the chromosomal dna in the form of a dict where keys hold the
+           chromosome name and the values holds the sequence.
+    :param dict exons: See return value of `get_exons`
+    :param dict cds_starts: See return value of `transgene::get_exons`
+    :param int extend_length: The number of codons downstream of a fusion to process
     """
     logging.info('Generating fusion peptides of length %d' % peplen)
 
@@ -375,172 +546,181 @@ def insert_fusions(transcriptome, fusion_calls, gene_transcripts, peplen, outfil
 
         donor_name, acceptor_name = call.name.split('-')
 
-        junction_seq1 = call.junctionSeq1
-        end1 = int(call.end1)
+        if call.junctionSeq1 != '.' and call.junctionSeq2 != '.':
+            # If the user provides BOTH junctions, just use their sequences.
+            f = insert_fusions_from_junctions(transcriptome, call, gene_transcripts, peplen,
+                                              outfile, previous_alignments)
+            if f:
+                found = True
+            continue
 
         # Iterate over all possible transcripts for the donor gene
         for donor_transcript_id in gene_transcripts[donor_name]:
-
+            logging.debug('Processing donor transcript %s', donor_transcript_id)
+            # A Flag indicating if the donor junction was in an intron
+            donor_in_intron = False
             # If a donor sequence is not provided, find the theoretical one
-            if exons and exons[donor_transcript_id] and call.junctionSeq1 == '.':
+            if exons and exons[donor_transcript_id]:
                 logging.debug("Inferring donor junction sequence using breakpoint")
-                junction_seq1 = get_donor_junction_exon(end1, exons[donor_transcript_id])
-
-            if junction_seq1 is None:
-                continue
-
-            # Check to see if the junction sequence is large enough for neoepitope prediction
-            if len(junction_seq1) // 3 < peplen - 1 :
-                logging.warn('Donor sequence is not long enough for neoepitope prediction'
-                             '\n%s' % junction_seq1)
-                continue
-
-            # Find the frame in the donor sequence using a reference transcriptome
-            try:
-                donor_transcript = transcriptome[donor_transcript_id]
-
-                # Check if we have already aligned this sequence (ie for another peptide length)
-                try:
-                    bounds = previous_alignments[(donor_transcript, junction_seq1)]
-
-                # If not, then align the sequence and save the alignment information
-                except KeyError:
-                    bounds = align_filter(donor_transcript, junction_seq1, 'donor')
-                    previous_alignments[(donor_transcript, junction_seq1)] = bounds
-
-                # Donor sequence may not align to some isoforms
-                if bounds is None:
-                    logging.debug('Donor sequence did not align to reference transcripts')
+                if donor_transcript_id not in cds_starts:
+                    logging.warning('Cowardly refusing to process %s as the 5\' donor sequence '
+                                    'since it does not have a defined CDS start.',
+                                    donor_transcript_id)
                     continue
-
-            except KeyError:
+                in_frame_donor_seq, donor_in_intron = get_donor_junction_exon(
+                    int(call.end1), exons[donor_transcript_id], cds_starts[donor_transcript_id],
+                    peplen)
+                logging.debug('Inferred 5\' Junction sequence with breakpoint %s: %s', call.end1,
+                              in_frame_donor_seq)
+            else:
+                if call.junctionSeq1 != '.':
+                    logging.warning('Cannnot process %s as the 5\' donor sequence since it does '
+                                    'not have an entry in the input GTF. A junction sequence was '
+                                    'provided but not used since the 3\' partner has no junction '
+                                    'sequence .', donor_transcript_id)
+                else:
+                    logging.warning('Cannnot process %s as the 5\' donor sequence since it does '
+                                    'not have an entry in the input GTF and a junction sequence '
+                                    'was not provided.', donor_transcript_id)
                 continue
 
-            # Find the position of the transcript where the predicted donor sequence starts
-            in_frame_adjustment = scan_frame(bounds.rstart)
-            if in_frame_adjustment is None:
+            if in_frame_donor_seq is None:
+                # Skip 5' UTR
+                continue
+            # Check to see if the junction sequence is large enough for neoepitope prediction
+            if len(in_frame_donor_seq) < 1:
+                logging.warn('Donor sequence is not long enough for neoepitope prediction'
+                             '\n%s' % in_frame_donor_seq)
                 continue
 
-            # Slice the donor transcript such that the first base is in-frame
-            # May have an overhang base
-            donor_start = bounds.qstart + in_frame_adjustment
-            in_frame_donor_seq = junction_seq1[donor_start:]
-            in_frame_donor_seq_len = len(in_frame_donor_seq)
-
+            # Now process the acceptor
+            denovo_acceptor = False
             if acceptor_name in gene_transcripts:
                 acceptor_transcript_ids = gene_transcripts[acceptor_name]
-
+                genomic_seq = None
             else:
-                logging.debug('Could not find acceptor transcript ID')
-                break
+                logging.debug('Could not find acceptor transcript ID for %s. Attempting to infer '
+                              'an acceptor sequence from the genome.', acceptor_name)
+                # If there is no downstream transcript, it could be a mapping to an RNA Gene. We
+                # will have to use sequence from the genome.
+                strand = call.strand2
+                chrom = call.chrom2
+                denovo_acceptor = True
+                genomic_seq = get_genomic_sequence(int(call.start2), chroms[chrom],
+                                                   extend_length, strand)
+                logging.debug('Inferred acceptor sequence with breakpoint %s: %s', call.start2,
+                              genomic_seq)
+                acceptor_transcript_ids = [acceptor_name]
 
             # Now iterate over all possible acceptor transcript sequences
             start2 = int(call.start2)
+            donor_overhang = len(in_frame_donor_seq) % 3
             for acceptor_transcript_id in acceptor_transcript_ids:
-                junction_seq2 = call.junctionSeq2
+                logging.debug('Processing acceptor transcript %s', acceptor_transcript_id)
+                acceptor_seq = ''
+                acceptor_in_intron = False
+                acceptor_in_utr = False
+                if not denovo_acceptor:
+                    # Predict acceptor sequence if none was provided
+                    if exons and acceptor_transcript_id in exons:
+                        if (acceptor_transcript_id not in cds_starts or
+                                (call.strand2 == '+' and
+                                 start2 < cds_starts[acceptor_transcript_id]) or
+                                (call.strand2 == '-' and
+                                 start2 > cds_starts[acceptor_transcript_id])):
+                            # If the 3' acceptor doesn't have a defnied start codon or if the
+                            # breakpoint is in the gene but before the CDS start (in the UTR)
+                            genomic_seq = get_genomic_sequence(start2, chroms[call.chrom2],
+                                                               extend_length, call.strand2)
+                            acceptor_in_utr = True
+                        else:
+                            acceptor_seq, genomic_seq, acceptor_in_intron = get_acceptor_junction(
+                                start2, exons[acceptor_transcript_id],
+                                cds_starts[acceptor_transcript_id], chroms[call.chrom2], peplen)
+                    else:
+                        if call.junctionSeq2 != '.':
+                            logging.warning('Cannnot process %s as the 3\' donor sequence since it '
+                                            'does not have an entry in the input GTF. A junction '
+                                            'sequence was provided but not used since the 5\' '
+                                            'partner has no junction sequence .',
+                                            acceptor_transcript_id)
+                        else:
+                            logging.warning('Cannnot process %s as the 3\' donor sequence since '
+                                            'it does not have an entry in the input GTF and a '
+                                            'junction sequence was not provided.',
+                                            acceptor_transcript_id)
+                        continue
 
-                # Predict acceptor sequence if none was provided
-                if exons and acceptor_transcript_id in exons and junction_seq2 == '.':
-                    junction_seq2 = get_acceptor_junction(start2, exons[acceptor_transcript_id])
-
-                if junction_seq2 is None:
-                    logging.debug('Could not infer theoretical acceptor junction sequence')
+                in_frame_acceptor_seq = ''
+                if donor_in_intron and not acceptor_in_intron:
+                    if acceptor_in_utr:
+                        # If the donor breakpoint was in an intron, the acceptor must be too else we
+                        # cannot properly figure out splicing
+                        logging.warning('%s-%s was predicted to have a 5\' breakpoint in an intron '
+                                        'but the 3\' beakpoint was in the 5\' UTR of the acceptor '
+                                        'gene. Cannot denovo assess splicing. Skipping.',
+                                        donor_transcript_id, acceptor_transcript_id)
+                    elif denovo_acceptor:
+                        # If the donor breakpoint was in an intron, the acceptor must be too else we
+                        # cannot properly figure out splicing
+                        logging.warning('%s-%s was predicted to have a 5\' breakpoint in an intron '
+                                        'but the 3\' beakpoint was in the 5\' UTR of the acceptor '
+                                        'gene. Cannot denovo assess splicing. Skipping.',
+                                        donor_transcript_id, acceptor_transcript_id)
+                    else:
+                        # If the donor breakpoint was in an intron, the acceptor must be too else we
+                        # cannot properly figure out splicing
+                        logging.warning('%s-%s was predicted to have a 5\' breakpoint in an intron '
+                                        'but the 3\' beakpoint was not. Cannot denovo assess '
+                                        'splicing. Skipping.', donor_transcript_id,
+                                        acceptor_transcript_id)
                     continue
+                elif (not donor_in_intron and
+                          (acceptor_in_intron or acceptor_in_utr or denovo_acceptor)):
+                    if donor_overhang == 0:
+                        in_frame_acceptor_seq = genomic_seq[:(extend_length - 1) * 3]
+                    else:
+                        in_frame_acceptor_seq = genomic_seq[:(3 - donor_overhang +
+                                                              (extend_length - 1) * 3)]
+                else:
+                    # donor in intron and acceptor in intron
+                    # donor not in intron and acceptor not in intron)
+                    if donor_overhang == 0:
+                        in_frame_acceptor_seq = acceptor_seq[:(peplen - 1) * 3]
+                    else:
+                        in_frame_acceptor_seq = acceptor_seq[:(3 - donor_overhang +
+                                                               (peplen - 1) * 3)]
 
-                acceptor_in_frame_adjustment = None
-                try:
-                    # Get reference coding transcript for acceptor gene
-                    acceptor_transcript = transcriptome[acceptor_transcript_id]
-
-                    try:
-                        # Find the position of the transcript where the predicted acceptor sequence starts
-                        acceptor_bounds = previous_alignments[(acceptor_transcript, junction_seq2)]
-
-                    except KeyError:
-                        acceptor_bounds = align_filter(acceptor_transcript, junction_seq2, 'donor')
-                        previous_alignments[(acceptor_transcript, junction_seq2)] = bounds
-
-                    # If the acceptor sequence could not be found, move onto the next transcript
-                    if acceptor_bounds is None:
-                        continue
-
-                    acceptor_in_frame_adjustment = scan_frame(acceptor_bounds.rstart)
-                    if acceptor_in_frame_adjustment is None:
-                        continue
-
-                # We can still generate a fusion transcript without a reference for the acceptor gene
-                except KeyError:
-                    pass
-
-                # Figure out if frame-shift occurred as a result of the fusion
-                acceptor_frame_shift = False
-
-                # If we don't have a reference transcript, then just continue without this information
-                if acceptor_in_frame_adjustment is None:
-                    pass
-
-                # There could be an indel that corrects the frameshift downstream
-                elif (in_frame_donor_seq_len % 3 + acceptor_in_frame_adjustment) % 3 != 0:
-                    logging.warn('%s--%s has a 3\' frame shift' % (call.hugo1, call.hugo2))
-                    acceptor_frame_shift = True
-
+                logging.debug('Inferred 3\' junction seq with breakpoint %s: %s ', call.start2,
+                              in_frame_acceptor_seq)
                 # Use the donor and acceptor sequences to generate the fusion transcript
-                fusion_seq = in_frame_donor_seq + junction_seq2
-                logging.debug(fusion_seq)
+                junction_seq = [in_frame_donor_seq, in_frame_acceptor_seq]
 
-                # The fusion peptide for MHC binding prediction includes all sliding windows that would
-                # generate a novel peptide sequence. Therefore, the donor sequence starts at the position
-                # of the last donor codon minus the fusion peptide length plus two codons. The acceptor
-                # portion consists of the last donor codon plus the peptide length.
-                #
-                #  Transcript Start: 0  3  6  9  12 15
-                #    Transcript End: 2  5  8  11 14 17
-                #       Codon Index: 0  1  2  3  4  5
-                #    Fusion Protein: D  D  D  A  A  A
-                #
-                #                       D  D  A
-                #                          D  A  A
-                #              Result:  D  D  A  A
-                #
-                #   peplen = 9
-                #
-                #   start = 6 - 9 + 6 = 3
-                #   end   = 6 + 9     = 14
+                logging.debug('Inferred junction seq: %s %s', junction_seq[0], junction_seq[1])
 
-                last_donor_codon = in_frame_donor_seq_len - in_frame_donor_seq_len % 3 - 3
-
-                start = last_donor_codon - 3 * peplen + 6
-
-                end = last_donor_codon + 3 * peplen
-
-                in_frame_junction_seq = fusion_seq[start: end]
-
-                fusion_peptide = translate(in_frame_junction_seq)
-                logging.debug("Fusion peptide:\n%s" % fusion_peptide)
+                fusion_peptide = translate(''.join(junction_seq))
+                logging.debug("Inferred fusion peptide: %s" % fusion_peptide)
 
                 if '*' in fusion_peptide:
-                    logging.warn('Skipping fusion epitope containing stop codon')
+                    fusion_peptide = fusion_peptide[:fusion_peptide.find('*')]
+
+                if len(fusion_peptide) < peplen:
+                    logging.warning('Fusion peptide %s from %s-%s (%s-%s) is is less than %s '
+                                    'residues.', fusion_peptide, donor_name, acceptor_name,
+                                    donor_transcript_id, acceptor_transcript_id, peplen)
                     continue
 
-
-                # This may occur if the fusion sequence occurs near the end of the transcript. Warn the user, but
-                # still output the fusion peptide because there is at least one fusion sequence that can be generated
-                # from it.
-                if len(fusion_peptide) < peplen:
-                    logging.warning('Fusion peptide %s-%s is malformed.\n'
-                                    'Expected peptide of length %d, got %d' % (donor_name,
-                                                                               acceptor_name,
-                                                                               2 * peplen - 2,
-                                                                               len(fusion_peptide)))
-                    break
-
                 gencode_donor_id = gene_transcripts[donor_transcript_id]
-                gencode_acceptor_id = gene_transcripts[acceptor_transcript_id]
+                if acceptor_name in gene_transcripts:
+                    gencode_acceptor_id = gene_transcripts[acceptor_transcript_id]
+                else:
+                    gencode_acceptor_id = acceptor_transcript_id
 
                 # Write fusion neoepitope sequence to FASTA file
                 fasta = '>{donor_gene}-{acceptor_gene}_' \
                         '{donor_transcript}-{acceptor_transcript}_' \
                         '{donor_hugo}-{acceptor_hugo}_' \
+                        '{donor_breakpoint}-{acceptor_breakpoint}_' \
                         'FUSION_{score}\n' \
                         '{sequence}\n'.format(donor_gene=gencode_donor_id,
                                               acceptor_gene=gencode_acceptor_id,
@@ -548,40 +728,12 @@ def insert_fusions(transcriptome, fusion_calls, gene_transcripts, peplen, outfil
                                               acceptor_transcript=acceptor_transcript_id,
                                               donor_hugo=call.hugo1,
                                               acceptor_hugo=call.hugo2,
+                                              donor_breakpoint=call.end1,
+                                              acceptor_breakpoint=call.start2,
                                               score=call.score,
                                               sequence=fusion_peptide)
                 outfile.write(fasta)
                 found = True
-
-                # A frameshift in the acceptor sequence also generates
-                # candidate neoepitope sequences
-                if output_frameshift and acceptor_frame_shift:
-                    for i in range(end, len(fusion_seq) - 3 * peplen, 3):
-                        shift_sequence = fusion_seq[i: i + 3 * peplen]
-                        shift_peptide = translate(shift_sequence)
-
-                        if '*' in shift_peptide:
-                            break
-
-                        if len(shift_peptide) != peplen:
-                            break
-
-                        logging.debug('Created fusion frameshift peptide:\n%s' % shift_peptide)
-
-
-                        # Write frameshift peptide to FASTA file
-                        fasta = '>{donor_gene}-{acceptor_gene}_' \
-                                '{donor_transcript}-{acceptor_transcript}_' \
-                                '{donor_hugo}-{acceptor_hugo}_' \
-                                'FUSION_ACCEPTOR_FRAMESHIFT\n' \
-                                '{sequence}\n'.format(donor_gene=gencode_donor_id,
-                                                      acceptor_gene=gencode_acceptor_id,
-                                                      donor_transcript=donor_transcript_id,
-                                                      acceptor_transcript=acceptor_transcript_id,
-                                                      donor_hugo=call.hugo1,
-                                                      acceptor_hugo=call.hugo2,
-                                                      sequence=shift_peptide)
-                        outfile.write(fasta)
 
     if not found:
         logging.warn("Did not generate any fusion peptides from data!")
@@ -589,4 +741,14 @@ def insert_fusions(transcriptome, fusion_calls, gene_transcripts, peplen, outfil
     # Save alignments for different peptide lengths
     with open('transgene_fusion_alignments.pkl', 'w') as f:
         pickle.dump(previous_alignments, f)
+
+
+def get_genomic_sequence(breakpoint, chrom_seq, extend_length, strand):
+    breakpoint -= 1
+    if strand == '+':
+        genomic_sequence = chrom_seq[breakpoint:breakpoint + extend_length * 3]
+    else:
+        genomic_sequence = chrom_seq[breakpoint - extend_length * 3:breakpoint + 1]
+        genomic_sequence = genomic_sequence[::-1].translate(trans)
+    return genomic_sequence
 

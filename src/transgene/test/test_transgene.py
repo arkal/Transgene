@@ -27,7 +27,7 @@ import shutil
 import tempfile
 import unittest
 
-from transgene.core import main as transgene_main
+from transgene.core import main as transgene_main, get_ref_pos_alt_aa
 from transgene.common import file_type, get_exons, read_fasta
 from transgene.indel import get_codon, get_exon_start_pos
 
@@ -139,7 +139,7 @@ class TransgeneTest(unittest.TestCase):
             params.snpeff_file = None
             params.vep_file = open(self._get_input_path('test_input/snpeff_test_vep.vcf'))
         params.transcript_file = open(self._get_input_path('test_input/test.pc_transcripts.fa'))
-        params.extend_length = 30
+        params.extend_length = 10
         params.filter_oxog = use_DNA
         params.dna_file = self._get_input_path('test_input/test_dna.bam') if use_DNA else None
         params.oxog_min_alt_freq = 0.1 if use_DNA else None
@@ -524,25 +524,35 @@ class TransgeneTest(unittest.TestCase):
         if test_with_fusions:
             # Then add the OXOG STUFF
             expected_peptides['9mer']['tumor'].update([
-                'SQLETYKRQEDPKWEF',    # HOOK3-RET fusion
-                'QSSSYGQQTASGDMQT',    # EWSR1-ATF1 fusion
-                'VVCTQPKSPSSTPVSP',    # TMPRSS2-ETV1 fusion
-                'QSSSYGQQSPPLGGAQ',    # EWSR1-FLI fusion
-                'NSKMALNSEALSVVSE'   # TMPRSS2-ERG fusion
+                'SQLETYKRQEDPKWEFP',  # HOOK3-RET fusion
+                'QSSSYGQQTASGDMQT',   # EWSR1-ATF1 fusion
+                'VVCTQPKSPSSTPVSP',   # TMPRSS2-ETV1 fusion
+                'QSSSYGQQSPPLGGAQT',  # EWSR1-FLI fusion
+                'MALNSEALSVVSE',      # TMPRSS2-ERG fusion with the small TMPRSS transcripts
+                'MALNSEALSVVSED',     # TMPRSS2-ERG fusion with the small TMPRSS transcripts
+                                      # with intronic ERG breakpoint
+                'NSKMALNSEALSVVSE',   # TMPRSS2-ERG fusion with the larger TMPRSS transript
+                'NSKMALNSEALSVVSED',  # TMPRSS2-ERG fusion with the larger TMPRSS transcripts
+                                      # with intronic ERG breakpoint
             ])
             expected_peptides['10mer']['tumor'].update([
-                'RSQLETYKRQEDPKWEFP',  # HOOK3-RET fusion
-                'QQSSSYGQQTASGDMQTY',  # EWSR1-ATF1 fusion
-                'PVVCTQPKSPSSTPVSPL',  # TMPRSS2-ETV1 fusion
-                'QQSSSYGQQSPPLGGAQT',  # EWSR1-FLI fusion
-                'DNSKMALNSEALSVVSED'  # TMPRSS2-ERG fusion
+                'RSQLETYKRQEDPKWEFPR',   # HOOK3-RET fusion
+                'QQSSSYGQQTASGDMQTY',    # EWSR1-ATF1 fusion
+                'PVVCTQPKSPSSTPVSPL',    # TMPRSS2-ETV1 fusion
+                'QQSSSYGQQSPPLGGAQTI',   # EWSR1-FLI fusion
+                'MALNSEALSVVSED',        # TMPRSS2-ERG fusion with the small TMPRSS transcripts
+                'DNSKMALNSEALSVVSED',    # TMPRSS2-ERG fusion with the larger TMPRSS transript
+
             ])
             expected_peptides['15mer']['tumor'].update([
-                'KANAARSQLETYKRQEDPKWEFPRKNLV',  # HOOK3-RET fusion
-                'PSQYSQQSSSYGQQTASGDMQTYQIRTT',  # EWSR1-ATF1 fusion
-                'TQASNPVVCTQPKSPSSTPVSPLHHASP',  # TMPRSS2-ETV1 fusion
-                'PSQYSQQSSSYGQQSPPLGGAQTISKNT',  # EWSR1-FLI fusion
-                'LLDAVDNSKMALNSEALSVVSEDQSLFE'  # TMPRSS2-ERG fusion
+                'KANAARSQLETYKRQEDPKWEFPRKNLVL',  # HOOK3-RET fusion
+                'PSQYSQQSSSYGQQTASGDMQTYQIRTT',   # EWSR1-ATF1 fusion
+                'TQASNPVVCTQPKSPSSTPVSPLHHASP',   # TMPRSS2-ETV1 fusion
+                'PSQYSQQSSSYGQQSPPLGGAQTISKNTE',  # EWSR1-FLI fusion
+                'MALNSEALSVVSEDQSLFE',            # TMPRSS2-ERG fusion with the small TMPRSS
+                'LLDAVDNSKMALNSEALSVVSED',        # TMPRSS2-ERG fusion with the large TMPRSS
+                                                  # with intronic ERG breakpoint
+                'LLDAVDNSKMALNSEALSVVSEDQSLFE'    # TMPRSS2-ERG fusion with the large TMPRSS
             ])
 
         # Compare test output to expected output
@@ -550,7 +560,7 @@ class TransgeneTest(unittest.TestCase):
             for kmer in self.output_fastas.keys():
                 observed_fasta = self.output_fastas[kmer][ttype]
                 observed_seqs = set()
-                for header, _, seq in core.read_fasta(open(observed_fasta, 'r'), alpha):
+                for header, _, seq in read_fasta(open(observed_fasta, 'r'), alpha):
                     observed_seqs.add(seq)
                 if observed_seqs != expected_peptides[kmer][ttype]:
                     if observed_seqs - expected_peptides[kmer][ttype]:
@@ -571,7 +581,7 @@ class TransgeneTest(unittest.TestCase):
                 ('B132*', ['B', 132, '*'])
                 ]
         for string, parsed_string in want:
-            get = core.get_ref_pos_alt_aa(string)
+            get = get_ref_pos_alt_aa(string)
             self.assertListEqual(parsed_string, get)
 
     def test_get_exon_start_pos(self):
