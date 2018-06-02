@@ -1449,7 +1449,8 @@ def main(params):
                                  extend_length=params.extend_length)
             if transcriptome and gene_transcript_ids and fusions:
                 insert_fusions(transcriptome, fusions, gene_transcript_ids, int(peplen), tumfile,
-                               exons=exons)
+                               chroms=chroms, exons=exons, cds_starts=cds_starts,
+                               extend_length=params.extend_length)
 
         if params.no_json_dumps:
             shutil.move(tumfile_path, '_'.join([params.prefix, 'tumor', peplen,
@@ -1485,7 +1486,7 @@ def run_transgene():
     parser.add_argument('--genome', dest='genome_file',
                         help='Path to reference genome fasta file, required if calling fusions, '
                         'indels, or SNPEff 4.1+.', type=file_type, required=False, default=None)
-    parser.add_argument('--indel_extend_length', dest='extend_length',
+    parser.add_argument('--extend_length', dest='extend_length',
                         help='The number of Codons downstream to an indel to process.',
                         type=int, default=10)
     # Fusion related options
