@@ -370,7 +370,7 @@ class TransgeneTest(unittest.TestCase):
                 expected_peptides['9mer']['tumor'].update(
                     ['PRSSPYGRRW',  # ENST00000376560.3:G100RXWG102*
                      'WLHNLCDVHLEAVKPVL',  # ENST00000321897.5:Y821H
-                     'ASTSRRQRQRTSHSSLLVCRTAGPGPGPPPATPRPRCR',  # ENST00000376148.4:R33Q?XXX_SNV_
+                     'ASTSRRQRQRTSHSSLLV',  # ENST00000376148.4:R33Q?XXX_SNV_
                      ])
                 expected_peptides['9mer']['normal'].update(
                     ['PRSSPYGRGW',  # ENST00000376560.3:G100RXWG102*
@@ -380,7 +380,7 @@ class TransgeneTest(unittest.TestCase):
                 expected_peptides['10mer']['tumor'].update(
                     ['GPRSSPYGRRW',  # ENST00000376560.3:G100RXWG102*
                      'FWLHNLCDVHLEAVKPVLW',  # ENST00000321897.5:Y821H
-                     'MASTSRRQRQRTSHSSLLVCRTAGPGPGPPPATPRPRCR',  # ENST00000376148.4:R33Q?XXX_SNV_
+                     'MASTSRRQRQRTSHSSLLV',  # ENST00000376148.4:R33Q?XXX_SNV_
                      ])
                 expected_peptides['10mer']['normal'].update(
                     ['GPRSSPYGRGW',  # ENST00000376560.3:G100RXWG102*
@@ -390,7 +390,7 @@ class TransgeneTest(unittest.TestCase):
                 expected_peptides['15mer']['tumor'].update(
                     ['IRRGLGPRSSPYGRRW',  # ENST00000376560.3:G100RXWG102*
                      'HALHHFWLHNLCDVHLEAVKPVLWHSPRP',  # ENST00000321897.5:Y821H
-                     'RPKSSMASTSRRQRQRTSHSSLLVCRTAGPGPGPPPATPRPRCR', # ENST00000376148.4:R33Q?XXX_SNV_
+                     'RPKSSMASTSRRQRQRTSHSSLLV', # ENST00000376148.4:R33Q?XXX_SNV_
                      ])
                 expected_peptides['15mer']['normal'].update(
                     ['IRRGLGPRSSPYGRGW',  # ENST00000376560.3:G100RXWG102*
