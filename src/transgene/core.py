@@ -712,7 +712,7 @@ def merge_adjacent_snvs(snvs, muts):
     :param dict snvs: The collection of snvs in the protein
     :param list muts: The group of mutations found to be coexpressed
     :return: The corrected tuple of mutations in the group
-    :rtype: tuple
+    :rtype: str
 
     >>> snvs = {'R148R': {'AA': {'change': 'Cgg/Agg'}}, 'R148Q': {'AA': {'change': 'cGg/cAg'}}}
     >>> merge_adjacent_snvs(snvs, ['R148R', 'R148Q'])
@@ -779,7 +779,8 @@ def correct_for_same_codon(snvs, mut_group):
         positions = {snvs[x]['AA']['POS'] for x in mut_group}
         # These groups are going to be small so we aren't losing much by brute-forcing this.
         for pos in sorted(positions):
-            muts = [mut for mut in mut_group if str(pos) in mut]
+            muts = [mut for mut in mut_group if pos == int(mut.translate(None,
+                                                                         string.letters + '*!'))]
             if len(muts) == 1:
                 out_list.extend(muts)
             elif len({snvs[mut]['NUC']['POS'] for mut in muts}) == 1:
@@ -788,17 +789,30 @@ def correct_for_same_codon(snvs, mut_group):
                 logging.info('Skipping a group (%s) containing a Multi-Allelic Variant.', muts)
                 return ()
             else:
-                logging.info('Identified co-expressed mutations (%s)that affect the same '
-                             'codon/AA.  Merging.', muts)
-                merged_group = merge_adjacent_snvs(snvs, muts)
+                logging.info('Identified co-expressed mutations (%s) that affect the same '
+                             'codon/AA.', muts)
+                if any('!' in mut for mut in snvs
+                       if mut != 'has_indel' and
+                       pos == int(mut.translate(None, string.letters + '*!'))):
+                    # We have previously merged this group. Get the merged result and strip the '!'
+                    merged_group = [mut for mut in snvs if mut != 'has_indel' and
+                                    '!' in mut and
+                                    pos == int(mut.translate(None, string.letters + '*!'))][0][:-1]
+                    logging.debug('Using previously merged (%s) -> (%s).',
+                                  muts, merged_group)
+                else:
+                    merged_group = merge_adjacent_snvs(snvs, muts)
+                    logging.info('Merged (%s) into %s.', muts, merged_group)
+                    # Now add this to the mutations dict. Add it in with a '!' suffix so we can
+                    # differentiate between the original and a merged one if the merge results in
+                    # one of the original codons.
+                    snvs[merged_group + '!'] = {'AA': {'REF': merged_group[0],
+                                                       'ALT': merged_group[-1],
+                                                       'POS': pos,
+                                                       'VAF': min([snvs[x]['AA']['VAF']
+                                                                   for x in mut_group])},
+                                                'indel': False}
                 out_list.append(merged_group)
-                logging.info('Merged (%s) into %s.', muts, merged_group)
-                # Now add this to the mutations dict
-                snvs[merged_group] = {'AA': {'REF': merged_group[0],
-                                             'ALT': merged_group[-1],
-                                             'POS': pos,
-                                             'VAF': min([snvs[x]['AA']['VAF'] for x in mut_group])},
-                                      'indel': False}
         return tuple(out_list)
 
 
@@ -1080,7 +1094,7 @@ def get_genomic_seq(pept, group_muts, pept_muts, chroms, exons, cds_starts, exte
     prev = curr_codon_start_pos
     for mut in group_muts:
         mut_pos = pept_muts[mut]['NUC']['POS']
-        if abs(mut_pos - curr_codon_start_pos) > extend_length:
+        if abs(mut_pos - curr_codon_start_pos) > codon_extend_length:
             break
         if positive_strand:
             next_n_bases.extend(chroms[chrom][prev:mut_pos])
