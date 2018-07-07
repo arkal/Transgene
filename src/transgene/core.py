@@ -741,7 +741,7 @@ def correct_for_same_codon(snvs, mut_group):
     """
     If two mutations in the group modify the same codon, snpeff calls them separately and the naive
     rna filter in Transgene also handles them independently. This method corrects the calls if they
-    are found to be on the same allele.
+    are found to be on the same allele. A merged group is suffixed with an exclamation point.
 
     :param dict(str, dict(str, str|int)) snvs: The collection of snvs in the protein
     :param tuple(stri) mut_group: The group of mutations found to be coexpressed
@@ -754,19 +754,29 @@ def correct_for_same_codon(snvs, mut_group):
     ('A123B',)
     >>> correct_for_same_codon(snvs, ('A123B', 'C124D'))
     ('A123B', 'C124D')
-    >>> snvs = {'R148R': {'AA': {'change': 'Cgg/Agg', 'POS': 148}, 'NUC': {'POS': 12345}}, \
-                'R148Q': {'AA': {'change': 'cGg/cAg', 'POS': 148}, 'NUC': {'POS': 12346}}, \
-                'R149X': {'AA': {'change': 'xXx/xYx', 'POS': 149}, 'NUC': {'POS': 12349}}}
+    >>> snvs = {'R148R': {'AA': {'change': 'Cgg/Agg', 'POS': 148, 'VAF': 0.6}, 'NUC': {'POS': 12345}}, \
+                'R148Q': {'AA': {'change': 'cGg/cAg', 'POS': 148, 'VAF': 0.4}, 'NUC': {'POS': 12346}}, \
+                'R149X': {'AA': {'change': 'xXx/xYx', 'POS': 149, 'VAF': 0.5}, 'NUC': {'POS': 12349}}}
     >>> x = correct_for_same_codon(snvs, ('R148R', 'R148Q', 'R149X'))
     >>> x
-    ('R148K', 'R149X')
-    >>> 'R148K' in snvs
+    ('R148K!', 'R149X')
+    >>> 'R148K!' in snvs
     True
-    >>> snvs['R148K']['AA']['POS'] == 148
+    >>> snvs['R148K!']['AA']['POS'] == 148
     True
-    >>> snvs = {'R148R': {'AA': {'change': 'Cgg/Agg', 'POS': 148}, 'NUC': {'POS': 12345}}, \
-                'R148W': {'AA': {'change': 'Cgg/Tgg', 'POS': 148}, 'NUC': {'POS': 12345}}, \
-                'R149X': {'AA': {'change': 'xXx/xYx', 'POS': 149}, 'NUC': {'POS': 12349}}}
+    >>> snvs = {'H148R': {'AA': {'change': 'cAt/cGt', 'POS': 148, 'VAF': 0.6}, 'NUC': {'POS': 12345}}, \
+                'H148Q': {'AA': {'change': 'caT/caA', 'POS': 148, 'VAF': 0.4}, 'NUC': {'POS': 12346}}, \
+                'R149X': {'AA': {'change': 'xXx/xYx', 'POS': 149, 'VAF': 0.5}, 'NUC': {'POS': 12349}}}
+    >>> x = correct_for_same_codon(snvs, ('H148R', 'H148Q', 'R149X'))
+    >>> x
+    ('H148R!', 'R149X')
+    >>> 'H148R!' in snvs
+    True
+    >>> snvs['H148R!']['AA']['POS'] == 148
+    True
+    >>> snvs = {'R148R': {'AA': {'change': 'Cgg/Agg', 'POS': 148, 'VAF': 0.6}, 'NUC': {'POS': 12345}}, \
+                'R148W': {'AA': {'change': 'Cgg/Tgg', 'POS': 148, 'VAF': 0.4}, 'NUC': {'POS': 12345}}, \
+                'R149X': {'AA': {'change': 'xXx/xYx', 'POS': 149, 'VAF': 0.5}, 'NUC': {'POS': 12349}}}
     >>> correct_for_same_codon(snvs, ('R148R', 'R148W', 'R149X'))
     ()
     """
@@ -797,21 +807,24 @@ def correct_for_same_codon(snvs, mut_group):
                     # We have previously merged this group. Get the merged result and strip the '!'
                     merged_group = [mut for mut in snvs if mut != 'has_indel' and
                                     '!' in mut and
-                                    pos == int(mut.translate(None, string.letters + '*!'))][0][:-1]
+                                    pos == int(mut.translate(None, string.letters + '*!'))][0]
                     logging.debug('Using previously merged (%s) -> (%s).',
-                                  muts, merged_group)
+                                  muts, merged_group[:-1])
                 else:
-                    merged_group = merge_adjacent_snvs(snvs, muts)
-                    logging.info('Merged (%s) into %s.', muts, merged_group)
+                    merged_group = merge_adjacent_snvs(snvs, muts) + '!'
+                    logging.info('Merged (%s) into %s.', muts, merged_group[:-1])
                     # Now add this to the mutations dict. Add it in with a '!' suffix so we can
                     # differentiate between the original and a merged one if the merge results in
                     # one of the original codons.
-                    snvs[merged_group + '!'] = {'AA': {'REF': merged_group[0],
-                                                       'ALT': merged_group[-1],
-                                                       'POS': pos,
-                                                       'VAF': min([snvs[x]['AA']['VAF']
-                                                                   for x in mut_group])},
-                                                'indel': False}
+                    snvs[merged_group] = {'AA': {'REF': merged_group[0],
+                                                 'ALT': merged_group[-2],  # -1 is an !
+                                                 'POS': pos,
+                                                 'VAF': min(
+                                                     [snvs[x]['AA']['VAF'] for x in mut_group
+                                                      if pos == int(x.translate(None,
+                                                                                string.letters +
+                                                                                '*!'))])},
+                                          'indel': False}
                 out_list.append(merged_group)
         return tuple(out_list)
 
@@ -912,7 +925,7 @@ def insert_mutations(protein_fa, mutations, tumfile, normfile, peplen, rna_bam=N
                 group_muts = correct_for_same_codon(peptide_muts[pept], group_muts)
                 # After correcting, if there is only ONE mutation and it is a stop gain, disregard
                 # this call
-                if len(group_muts) == 1 and group_muts[0][-1] == '*':
+                if len(group_muts) == 1 and peptide_muts[pept][group_muts[0]]['AA']['ALT'] == '*':
                     continue
                 group_muts = tuple([x for x in group_muts
                                     if peptide_muts[pept][x]['AA']['REF'] !=
@@ -929,10 +942,11 @@ def insert_mutations(protein_fa, mutations, tumfile, normfile, peplen, rna_bam=N
                 prev = max(mut_pos - peplen, 0)  # First possible AA in the IAR
                 skip = False  # A flag to identify we need to skip this group
                 for group_mut in group_muts:
+                    _group_mut = group_mut[:-1] if group_mut.endswith('!') else group_mut
                     mut_pos = peptide_muts[pept][group_mut]['AA']['POS']
                     ref = peptide_muts[pept][group_mut]['AA']['REF']
                     alt = peptide_muts[pept][group_mut]['AA']['ALT']
-                    out_pept['pept_name'].append(group_mut + '#' +
+                    out_pept['pept_name'].append(_group_mut + '#' +
                                                  peptide_muts[pept][group_mut]['AA']['VAF'])
                     out_pept['tum_seq'].extend(protein[prev:mut_pos - 1])
                     out_pept['norm_seq'].extend(protein[prev:mut_pos - 1])
