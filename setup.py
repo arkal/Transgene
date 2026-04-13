@@ -42,7 +42,7 @@ setup(name='transgene',
           'swalign>=0.3.3',
       ],
       tests_require=[
-          'pytest==2.8.3'],
+          'pytest==9.0.3'],
       test_suite='transgene',
       entry_points={
           'console_scripts': [
